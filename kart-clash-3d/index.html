@@ -227,6 +227,16 @@ s{opacity:.55;margin-right:4px}
  .playbox{width:min(340px,42vw)}.resbox{width:min(290px,34vw);padding:10px 14px}.resbox .ptitle{font-size:18px}.res .win{font-size:18px;margin:4px 0}.res table{font-size:13px}.resbox .big{font-size:15px;padding:7px}
  .opts3{padding:6px 8px}
 }
+#chatWheel{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);z-index:7;width:min(440px,92vw);padding:10px 12px 12px;box-sizing:border-box;background:rgba(10,14,34,.9);border:1px solid rgba(120,140,220,.3);border-radius:16px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.cwhead{font-weight:900;font-style:italic;text-transform:uppercase;font-size:14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.cwhead span{font-size:11px;font-style:normal;font-weight:600;opacity:.6;text-transform:none}
+.cwgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.cwgrid button{padding:7px 4px;font-size:13px;border-radius:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cwgrid button.em{font-size:22px;padding:3px}
+.cwgrid button small{opacity:.5;font-size:10px;margin-right:3px}
+#lchatLog{font-size:13px;line-height:1.5;min-height:20px;max-height:110px;overflow:auto;background:rgba(255,255,255,.04);border-radius:10px;padding:6px 10px;margin-bottom:6px}
+#lchatLog:empty:before{content:"Say hi with a quick chat below!";opacity:.5}
+.lchat button{padding:4px 8px;font-size:13px;border-radius:9px}
 #toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(12,16,34,.95);border:1px solid var(--gold);color:#fff;padding:10px 16px;border-radius:12px;font-weight:700;max-width:88vw;text-align:center;pointer-events:none}
 #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;opacity:.8;z-index:9;text-align:center;padding:20px}
 </style>
@@ -307,12 +317,15 @@ s{opacity:.55;margin-right:4px}
   <div class="ptitle">Settings</div>
   <div class="lbl">Graphics</div><div class="row" id="qRow"><button data-q="low">Low</button><button data-q="med">Medium</button><button data-q="high">High</button></div>
   <div class="hint">High adds bloom glow. Low turns off real-time shadows for slower phones.</div>
+  <div class="lbl">Quick chat</div><div class="row" id="chatRow"><button data-c="1">On</button><button data-c="0">Off</button></div>
+  <div class="hint">Quick chat only uses preset phrases and emotes. Turn it off to hide everyone's messages.</div>
   <div class="lbl">Controls</div>
   <div class="help">
    <div><b>Player 1:</b> WASD drive · Space fire · Shift hop &amp; drift · C look back</div>
    <div><b>Player 2:</b> Arrows drive · Enter fire · Right Shift hop &amp; drift · / look back</div>
    <div><b>Gamepad:</b> stick steers · RT gas · LT reverse · A fire · B or RB hop · Y look back</div>
-   <div><b>Touch:</b> drag on the left half to drive · FIRE and JUMP buttons on the right</div>
+   <div><b>Touch:</b> drag on the left half to drive · FIRE and JUMP buttons on the right · 💬 for quick chat</div>
+   <div><b>Quick chat:</b> T opens the chat wheel · keys 1–8 send a phrase</div>
    <div>Hop to jump over rockets and low fences. Hold hop while turning to drift, then let go for a speed boost. Grab <b>?</b> boxes for weapons. Most KOs when the clock runs out wins. P or Esc pauses.</div>
   </div>
   <button id="tutBtn" class="big alt">🎓 PLAY THE TUTORIAL</button>
@@ -320,6 +333,7 @@ s{opacity:.55;margin-right:4px}
  </div></div>
 </div>
 <div id="toast" class="hidden"></div>
+<div id="chatWheel" class="hidden"><div class="cwhead">Quick chat <span>T to close · 1–8 send</span></div><div class="cwgrid" id="cwGrid"></div></div>
 
 <div id="lobby" class="screen hidden">
  <div class="lobbytag"><div class="logo">KART CLASH <small>3D</small></div><div class="squad" id="squadTxt">Your squad</div></div>
@@ -341,6 +355,7 @@ s{opacity:.55;margin-right:4px}
    <button id="netStart" class="big">START MATCH</button>
   </div>
   <div id="waitMsg"></div>
+  <div id="lchatBox"><div class="lbl">Lobby chat</div><div id="lchatLog"></div><div class="row lchat" id="lchatRow"></div></div>
   <button id="leaveBtn" class="ghost" style="margin-top:14px">Leave room</button>
  </div>
 </div>
@@ -525,10 +540,12 @@ let viewers=[];            // karts this device has a camera for
 let feed=[];
 const opts={players:1,bots:4,time:180,map:0,mode:0,diff:1,netBots:4,netTime:180,netMap:0,netMode:0,netDiff:1};
 const DIFF_NAME=['Easy','Normal','Hard'];
+// quick chat: preset phrases and emotes only (no free text)
+const CHAT=['GG!','Nice!','Wow!','Oops!','Help!','Come at me!','Thanks!',"Let's go!",'😂','😎','😡','👋','🔥','💀','🏆','🤝'];
 let showTouch=('ontouchstart' in window)||matchMedia('(pointer:coarse)').matches;
 const LOWQ=matchMedia('(pointer:coarse)').matches;
 
-const prefs={name:'',car:0,drv:0,col:0,hat:1,fin:0,rim:0,trail:0,q:''};
+const prefs={name:'',car:0,drv:0,col:0,hat:1,fin:0,rim:0,trail:0,q:'',chat:1};
 try{Object.assign(prefs,JSON.parse(localStorage.getItem('kartclash3d')||'{}'));}catch(_){}
 if(!prefs.name)prefs.name='Racer'+Math.floor(rand(10,99));
 if(!['low','med','high'].includes(prefs.q))prefs.q=LOWQ?'med':'high';
@@ -630,7 +647,9 @@ addEventListener('keydown',e=>{
   keys[e.code]=true;
   if(state==='play'){
     if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();
-    if(e.code==='KeyP'||e.code==='Escape'){if(mode==='local')paused=!paused;else overlay=!overlay;}
+    if(e.code==='KeyP'||e.code==='Escape'){if(!$('chatWheel').classList.contains('hidden')){closeChatWheel();return;}if(mode==='local')paused=!paused;else overlay=!overlay;}
+    if(e.code==='KeyT'&&!e.repeat){if($('chatWheel').classList.contains('hidden'))openChatWheel();else closeChatWheel();}
+    if(/^Digit[1-8]$/.test(e.code)&&!e.repeat&&!G.tut)sendChat(+e.code.slice(5)-1);
     if((paused||overlay)&&e.code==='KeyQ')doQuit();
   }else if(ovOpen&&(e.code==='Escape'||e.code==='Enter'||e.code==='NumpadEnter')){e.preventDefault();closeOverlay();
   }else if((e.code==='Enter'||e.code==='NumpadEnter')&&!e.repeat&&performance.now()-endAt>1500){
@@ -644,7 +663,7 @@ addEventListener('blur',()=>{for(const k in keys)keys[k]=false;});
 let touch=[];
 function resetTouch(){touch=[0,1].map(()=>({joy:{id:null,cx:0,cy:0,dx:0,dy:0,mag:0},fire:{id:null},jump:{id:null}}));}
 resetTouch();
-let W=0,H=0,DPR=1,timerX=0;
+let W=0,H=0,DPR=1,timerX=0;const chatBtn={x:-999,y:0};
 function viewports(){
   if(viewers.length<2)return [{x:0,y:0,w:W,h:H}];
   if(W>=H)return [{x:0,y:0,w:W/2,h:H},{x:W/2,y:0,w:W/2,h:H}];
@@ -659,6 +678,7 @@ hudCv.addEventListener('pointerdown',e=>{
   const x=e.clientX,y=e.clientY;
   if(paused||overlay){for(const b of pauseButtons())if(x>b.x&&x<b.x+b.w&&y>b.y&&y<b.y+b.h){if(b.t==='Resume'){paused=false;overlay=false;}else doQuit();}return;}
   if(Math.abs(x-timerX)<60&&y<56){if(mode==='local')paused=true;else overlay=true;return;}
+  if(dist(x,y,chatBtn.x,chatBtn.y)<26){if($('chatWheel').classList.contains('hidden'))openChatWheel();else closeChatWheel();return;}
   showTouch=true;
   viewports().forEach((vp,pi)=>{
     if(x<vp.x||x>vp.x+vp.w||y<vp.y||y>vp.y+vp.h)return;
@@ -790,6 +810,7 @@ function kill(k,src,cause){
   k.star=k.spin=k.frozen=k.boost=k.mt=0;k.driftDir=0;
   if(src&&src!==k&&!sameTeam(src,k))src.kills++;
   modeOnKill(k);
+  if(src&&src!==k)botBanter(src,true);if(Math.random()<.5)botBanter(k,false);
   ev({e:'ko',a:src&&src!==k?src.i:-1,b:k.i,x:r1(k.x),y:r1(k.y),z:r1(Math.max(k.z,-60)),c:Math.max(0,CAUSES.indexOf(cause))});
 }
 function explode(x,y,z,owner,R,size){
@@ -1082,6 +1103,36 @@ function objectiveText(me){
     case 'gems':return '💎 Grab gems · getting wrecked drops half';
   }
   return null;}
+
+// =====================================================================
+// quick chat
+// =====================================================================
+let chatT=0;
+function sendChat(c){
+  c=clampInt(c,0,CHAT.length-1);closeChatWheel();
+  if(!prefs.chat){toast('Quick chat is off. Turn it on in ⚙ Settings.');return;}
+  const now=performance.now();if(now-chatT<1200)return;chatT=now;
+  if(state==='play'&&G){if(mode==='client')send(net.conn,{t:'chat',c});else chatEv(viewers[0],c);}
+}
+function chatEv(k,c){if(!k||!G)return;ev({e:'chat',k:k.i,c});
+  // a bot sometimes answers a human
+  if(k.ctrl!=='bot'&&Math.random()<.35){const g0=G;setTimeout(()=>{if(G!==g0||state!=='play')return;const bots=G.karts.filter(b=>b.ctrl==='bot'&&!b.dummy);if(bots.length)ev({e:'chat',k:bots[Math.floor(Math.random()*bots.length)].i,c:[0,1,8,9,11,12,15][Math.floor(Math.random()*7)]});},rand(700,1600));}}
+function botBanter(k,won){if(!G||G.tut||k.ctrl!=='bot'||k.dummy)return;const now=G.gameT;if(now-(G.lbc??-99)<6||Math.random()>.22)return;G.lbc=now;
+  const pool=won?[0,1,5,9,12,14]:[3,4,10,13];ev({e:'chat',k:k.i,c:pool[Math.floor(Math.random()*pool.length)]});}
+function openChatWheel(){if(state!=='play'||!prefs.chat)return;$('chatWheel').classList.remove('hidden');}
+function closeChatWheel(){$('chatWheel').classList.add('hidden');}
+$('cwGrid').innerHTML=CHAT.map((c,i)=>`<button data-c="${i}" class="${i>=8?'em':''}">${i<8?`<small>${i+1}</small>`:''}${esc(c)}</button>`).join('');
+$('cwGrid').addEventListener('click',e=>{const b=e.target.closest('[data-c]');if(b)sendChat(+b.dataset.c);});
+// lobby chat
+const lchat=[];
+function pushLobbyChat(name,c){if(!prefs.chat)return;lchat.push({name:cleanName(name),c:clampInt(c,0,CHAT.length-1)});if(lchat.length>6)lchat.shift();
+  const el=$('lchatLog');el.innerHTML=lchat.map(m=>`<div><b>${esc(m.name)}:</b> ${esc(CHAT[m.c])}</div>`).join('');el.scrollTop=1e6;}
+let lchatT=0;
+function sendLobbyChat(c){if(!prefs.chat){toast('Quick chat is off. Turn it on in ⚙ Settings.');return;}const now=performance.now();if(now-lchatT<1200)return;lchatT=now;
+  if(mode==='host'){const m={t:'lchat',n:myInfo().name,c};pushLobbyChat(m.n,c);for(const p of net.peers.values())send(p.conn,m);}
+  else if(mode==='client')send(net.conn,{t:'lchat',c});}
+$('lchatRow').innerHTML=CHAT.map((c,i)=>`<button data-c="${i}">${esc(c)}</button>`).join('');
+$('lchatRow').addEventListener('click',e=>{const b=e.target.closest('[data-c]');if(b)sendLobbyChat(+b.dataset.c);});
 
 // =====================================================================
 // tutorial
@@ -2453,6 +2504,7 @@ function updateVisuals(dt){
   boxVis.forEach((v,i)=>{const b=G.boxes[i],on=b&&b.active;if(b){const gm2=(b.gold||allGold)?goldBoxMat:boxMat;if(v.cube.material!==gm2)v.cube.material=gm2;}v.s+=((on?1:0)-v.s)*Math.min(1,dt*8);v.cube.visible=v.s>.02;v.cube.scale.setScalar(Math.max(.001,v.s));
     v.cube.rotation.set(t*.7,t*1.4,0);v.cube.position.y=1.3+Math.sin(t*2.5+i)*.18;v.gl.visible=on;});
   for(const s of spinners)s.rotation.y+=dt*.4;
+  for(const k of G.karts)if(k.bubble){k.bubble.t-=dt;if(k.bubble.t<=0)k.bubble=null;}
   updateModeVis(dt,t);updateBolts(dt);updateMevVis(dt,t);
   for(const p of padVis){const k=(t*1.4+p.ph)%1;p.ring.scale.setScalar(p.r*(1.1+k*.8));p.ring.material.opacity=1-k;p.ring.position.y=.25+k*.6;}
   for(const tx of lavaTexs){tx.offset.x=(tx.offset.x+dt*.02)%1;tx.offset.y=(tx.offset.y+dt*.013)%1;}
@@ -2540,6 +2592,8 @@ function handleEvent(e){
     case 'steal':{const a=K(e.a),b=K(e.b);if(a&&b){feed.push({msg:a.name+' stole '+b.name+'\'s '+(WEAP[WKEYS[e.w]]||{name:'item'}).name,t:4});
       for(let i=0;i<14;i++){const f=i/14;spark(wx(b.x+(a.x-b.x)*f),Math.max(a.z,b.z)*S+1.2+Math.sin(f*PI),wz(b.y+(a.y-b.y)*f),0,1,0,.5,.18,'#ff4d6d',0);}
       if(viewers.includes(a)||viewers.includes(b))tone(500,.25,'square',.06,1000);}break;}
+    case 'chat':{const k=K(e.k);if(!k||!prefs.chat)break;const c=clampInt(e.c,0,CHAT.length-1);k.bubble={c,t:3.2};if(c<8)feed.push({msg:k.name+': '+CHAT[c],t:3.5});if(feed.length>5)feed.shift();
+      if(viewers.includes(k)||vol(k.x,k.y)>.3)tone(c<8?880:1320,.06,'sine',.05);break;}
     case 'hill':feed.push({msg:'The hill moved!',t:3.5});tone(520,.15,'triangle',.06);setTimeout(()=>tone(780,.2,'triangle',.06),120);break;
     case 'elim':{const k=K(e.k);if(k){k.out=true;feed.push({msg:k.name+' is out of lives!',t:4.5});}break;}
     case 'grab':{const k=K(e.k);if(k){feed.push({msg:k.name+' took the '+TEAM_NAME[e.t]+' flag!',t:4});if(viewers.some(v=>v.team===e.t))tone(300,.4,'sawtooth',.06,180);if(viewers.includes(k))k.popups.push({text:'FLAG TAKEN! GO HOME!',t:1.8,y:1});}break;}
@@ -2601,6 +2655,9 @@ function renderGame(dt){
 // =====================================================================
 const ctx=hctx;
 function panel(x,y,w,h,r=12){ctx.fillStyle='rgba(10,14,28,0.72)';ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();}
+function drawBubble(x,y,c,a){const em=c>=8,txt=CHAT[c];ctx.globalAlpha=a;ctx.font=em?'30px system-ui':'800 14px system-ui,sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  const w=em?44:ctx.measureText(txt).width+18,h=em?42:26;ctx.fillStyle='rgba(255,255,255,.95)';ctx.beginPath();ctx.roundRect(x-w/2,y-h,w,h,10);ctx.fill();
+  ctx.beginPath();ctx.moveTo(x-6,y-1);ctx.lineTo(x+6,y-1);ctx.lineTo(x,y+7);ctx.closePath();ctx.fill();ctx.fillStyle='#141a33';ctx.fillText(txt,x,y-h/2+1);ctx.textBaseline='alphabetic';ctx.globalAlpha=1;}
 function drawTags(vp,me){
   ctx.save();ctx.beginPath();ctx.rect(vp.x,vp.y,vp.w,vp.h);ctx.clip();
   for(const o of G.karts){if(o===me||!o.alive||!o.vis||!o.vis.root.visible)continue;
@@ -2611,6 +2668,7 @@ function drawTags(vp,me){
     const tw=ctx.measureText(o.name).width;ctx.font='800 10px system-ui,sans-serif';ctx.fillStyle='#ffd23f';ctx.fillText(String(o.lvl||1),sx-tw/2-9,sy-10);
     ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(sx-20,sy-4,40,5);ctx.fillStyle=o.hp>60?'#3ee6c1':o.hp>30?'#ffd23f':'#ff4d6d';ctx.fillRect(sx-20,sy-4,40*clamp(o.hp/100,0,1),5);
     if(isTeam(G.gm)){ctx.fillStyle=TEAM_COL[o.team]||'#fff';ctx.fillRect(sx-24,sy-4,3,5);}
+    if(o.bubble){ctx.save();drawBubble(sx,sy-26-(1-Math.min(1,o.bubble.t))*6,o.bubble.c,clamp(o.bubble.t*2,0,1)*Math.max(a,.8));ctx.restore();ctx.globalAlpha=a;}
     const ic=o.star>0?'⭐':o.frozen>0?'❄️':o.shield>0?'🛡️':o.zap>0?'⚡':o.slip>0?'🛢️':'';if(ic){ctx.font='14px system-ui';ctx.fillText(ic,sx+30,sy);}
   }
   ctx.globalAlpha=1;ctx.restore();
@@ -2674,6 +2732,7 @@ function drawViewHUD(vp,k,dt){
     if(on){const sx=vp.x+(_v.x+1)/2*vp.w,sy=vp.y+(1-_v.y)/2*vp.h+bob;ctx.fillStyle=tg.col||'#3ee6c1';ctx.beginPath();ctx.moveTo(sx,sy+12);ctx.lineTo(sx-12,sy-6);ctx.lineTo(sx+12,sy-6);ctx.closePath();ctx.fill();}
     else{let ax=_v.x,ay=_v.y;if(_v.z>1){ax=-ax;ay=-ay;}const an=Math.atan2(-ay,ax),r=Math.min(vp.w,vp.h)*.38,sx=cx+Math.cos(an)*r,sy=vp.y+vp.h/2+Math.sin(an)*r;
       ctx.save();ctx.translate(sx,sy);ctx.rotate(an);ctx.fillStyle=tg.col||'#3ee6c1';ctx.beginPath();ctx.moveTo(18,0);ctx.lineTo(-8,-12);ctx.lineTo(-8,12);ctx.closePath();ctx.fill();ctx.restore();}}
+  if(k.bubble&&k.alive)drawBubble(cx,vp.y+vp.h*.6,k.bubble.c,clamp(k.bubble.t*2,0,1));
   if(G.countdown>0)bigText(String(Math.ceil(G.countdown)),cx,vp.y+vp.h*.38,110,'#fff');
   else if(G.countdown>-0.8)bigText('GO!',cx,vp.y+vp.h*.38,110,'#ffd23f',clamp(1+G.countdown/0.8,0,1));
   for(let i=k.popups.length-1;i>=0;i--){const p=k.popups[i];p.t-=dt;if(p.t<=0){k.popups.splice(i,1);continue;}
@@ -2724,6 +2783,8 @@ function drawGlobalHUD(dt){
     ctx.textAlign='center';ctx.fillStyle='#fff';ctx.fillText(txt,clamp(timerX,10+ow/2,W-10-ow/2),oy+17);feedY+=30;}
   if(objTxt){ctx.font='700 13px system-ui,sans-serif';const ow=Math.min(ctx.measureText(objTxt).width+20,W-20),oy=feedY-20;panel(clamp(timerX-ow/2,10,W-ow-10),oy,ow,24,8);ctx.textAlign='center';ctx.fillStyle='#fff';ctx.fillText(objTxt,clamp(timerX,10+ow/2,W-10-ow/2),oy+17);feedY+=30;}
   panel(bx,10,bw,bh);
+  if(prefs.chat&&!tut&&viewers.length===1){chatBtn.x=W-30;chatBtn.y=10+bh+28;ctx.fillStyle='rgba(10,14,28,0.72)';ctx.beginPath();ctx.arc(chatBtn.x,chatBtn.y,20,0,TAU);ctx.fill();
+    ctx.font='18px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#fff';ctx.fillText('💬',chatBtn.x,chatBtn.y+1);ctx.textBaseline='alphabetic';}else chatBtn.x=-999;
   sorted.forEach((k,n)=>{const y=10+rh*.85+n*rh;ctx.fillStyle=k.color;ctx.beginPath();ctx.arc(bx+12,y-fs*.35,fs*.33,0,TAU);ctx.fill();
     ctx.textAlign='left';const me=viewers.includes(k);ctx.fillStyle=me?'#fff':'rgba(255,255,255,0.78)';ctx.font=(me?'800 ':'600 ')+fs+'px system-ui,sans-serif';
     let nm=(me?'▶ ':'')+k.name;while(nm.length>3&&ctx.measureText(nm).width>bw-56)nm=nm.slice(0,-2)+'…';
@@ -2817,6 +2878,7 @@ function endMatch(completed=true){
   else{$('lobbyResults').innerHTML=html;if(mode==='host'&&quick)net.autoT=10;showLobby();if(mode==='host')broadcastLobby();}
 }
 function toMenu(keepResults){
+  closeChatWheel();
   if(G&&G.mev){G.mev.ph=2;applyMevWorld();}
   if(state==='play')clearKartVisuals();
   stopEngines();state='menu';paused=overlay=false;
@@ -2824,7 +2886,7 @@ function toMenu(keepResults){
   setPanel('play',!!keepResults);
   $('lobby').classList.add('hidden');$('menu').classList.remove('hidden');$('menu').scrollTop=0;
 }
-function showLobby(){state='lobby';$('menu').classList.add('hidden');$('lobby').classList.remove('hidden');$('lobby').scrollTop=0;renderLobby();}
+function showLobby(){closeChatWheel();state='lobby';$('menu').classList.add('hidden');$('lobby').classList.remove('hidden');$('lobby').scrollTop=0;renderLobby();}
 
 // =====================================================================
 // online multiplayer (PeerJS / WebRTC; the host runs the simulation)
@@ -2877,6 +2939,8 @@ function hostOnData(p,d){
       broadcastLobby();if(state==='lobby')renderLobby();if(state==='play')admit(p);break;
     case 'i':if(p.kart){p.kart.net.s=clamp(+d.s||0,-1,1);p.kart.net.th=clamp(+d.th||0,-1,1);p.kart.net.f=!!d.f;p.kart.net.j=!!d.j;}break;
     case 'ping':send(p.conn,{t:'pong',c:d.c});break;
+    case 'chat':{const now=performance.now();if(p.kart&&state==='play'&&now-(p.chatT||0)>1100){p.chatT=now;chatEv(p.kart,clampInt(d.c,0,CHAT.length-1));}break;}
+    case 'lchat':{const now=performance.now();if(p.info&&now-(p.lchatT||0)>1100){p.lchatT=now;const m={t:'lchat',n:p.info.name,c:clampInt(d.c,0,CHAT.length-1)};pushLobbyChat(m.n,m.c);for(const q of net.peers.values())send(q.conn,m);}break;}
   }
 }
 // drop a newcomer into the running match, taking over a bot if there is one
@@ -2988,6 +3052,7 @@ function clientOnData(d){
     case 's':if(state==='play'&&mode==='client'){snaps.push({t:performance.now(),d});if(snaps.length>40)snaps.shift();if(Array.isArray(d.e))for(const e of d.e)G.events.push(e);}break;
     case 'end':if(state==='play'&&G){(d.k||[]).forEach((q,i)=>{const k=G.karts[i];if(k&&Array.isArray(q)){k.kills=clampInt(q[0],0,999);k.deaths=clampInt(q[1],0,999);k.score=+q[2]||0;k.out=!!q[3];k.elimT=+q[4]||0;}});if(d.z)applyMs(d.z);endMatch(true);}break;
     case 'pong':net.rtt=net.rtt*.7+(performance.now()-d.c)*.3;break;
+    case 'lchat':pushLobbyChat(d.n,d.c);break;
     case 'full':if(state!=='menu'){leaveNet();toMenu();setTab('online');netMsg('That room is full (8 racers max).',true);}break;
   }
 }
@@ -3087,6 +3152,9 @@ $('plDone').addEventListener('click',closeOverlay);
 $('gearBtn').addEventListener('click',()=>openOverlay('settings'));
 $('setDone').addEventListener('click',closeOverlay);
 $('tutBtn').addEventListener('click',startTutorial);
+function syncChatRow(){document.querySelectorAll('#chatRow button').forEach(b=>b.classList.toggle('sel',+b.dataset.c===(prefs.chat?1:0)));$('lchatBox').classList.toggle('hidden',!prefs.chat);}
+$('chatRow').addEventListener('click',e=>{const b=e.target.closest('[data-c]');if(!b)return;prefs.chat=+b.dataset.c;savePrefs();syncChatRow();});
+syncChatRow();
 for(const id of['playlist','settings'])$(id).addEventListener('click',e=>{if(e.target.id===id)closeOverlay();});
 function syncResults(){const on=!!$('results').innerHTML;$('resBox').classList.toggle('hidden',!on);$('news').classList.toggle('hidden',on);}
 $('resClose').addEventListener('click',()=>{$('results').innerHTML='';syncResults();showTurntable();});
