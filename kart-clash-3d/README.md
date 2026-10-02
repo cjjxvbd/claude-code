@@ -19,11 +19,19 @@ Up to 8 racers per match.
 
 ## What's in it
 
-- **Arenas:**
+- **Arenas (8):**
   - **Smash Stadium:** grandstands, ramps up to a trophy plinth, jump pads.
   - **Snow Park:** a slippery frozen lake, snow decks and fences you can hop.
   - **Lava Pit:** lava pools, bridges and a smoking volcano. Touching lava wrecks you.
   - **Sky Arena:** floating islands with holes and no walls. Fall off and you're out.
+  - **Desert Canyon:** two banded mesas joined by a high causeway, with cacti and
+    boulders on the sand below.
+  - **Neon City:** night streets between four glowing tower blocks, with a raised
+    plaza and a spinning hologram in the middle.
+  - **Jungle Temple:** a stepped stone temple with a shrine on top, surrounded by
+    giant trees, idols and ruins.
+  - **Pirate Cove:** a sandy island with a beached pirate ship and two small
+    islets you reach by jump pad. Drive into the sea and you're out.
 - **Modes:**
   - **Free For All:** most KOs wins.
   - **Team Battle:** red vs blue, no friendly fire.
@@ -36,28 +44,45 @@ Up to 8 racers per match.
   boxes, nuke and nitro.
 - **Cosmetics:** 4 cars (Kart, Buggy, Racer, Monster), 14 drivers, 19 hats,
   16 paint colours, 7 paint finishes, 5 rim styles and 7 boost trails. Leveling
-  up unlocks drivers and hats; the rest come from the Shop and Season Pass.
+  up unlocks drivers and hats; the rest come from the Item Shop and Battle Pass.
 - **Graphics:** bloom glow on lights, lava and neon paint, a sun in the sky,
   skid marks, boost trails, speed lines and a winners' podium with confetti
   after each match.
 
-## Coins, shop and Season Pass
+## Menu
+
+The main menu is a game lobby in the style of Fortnite and Apex Legends. Your
+kart is on show in the middle of the screen, and tabs along the top open each
+part of the game:
+
+- **Play:** the playlist card shows the arena and mode. Tap **Change** to pick
+  from the arena tiles. Choose VS Bots or Online, then press **Play**. News cards
+  on the left link to the Battle Pass, Item Shop and Challenges.
+- **Locker:** your name and slots for car, driver, hat, paint, finish, rims and
+  boost trail. Tap a slot to change that item.
+- **Item Shop**, **Battle Pass** and **Challenges** (described below).
+- **⚙ Settings:** graphics quality and the controls.
+
+In an online room, everyone in the room appears side by side in the lobby.
+
+## Coins, shop and Battle Pass
 
 Everything is earned in the game with **coins**. There are no real-money
 purchases.
 
 - **Earning coins:** every finished match pays coins (more for KOs and a top-3
   finish). The daily reward pays more for each day in a row you play. Daily
-  missions (such as "Grab 15 item boxes") pay coins and Pass XP, and new
-  missions appear each day.
+  challenges (such as "Grab 15 item boxes") pay coins and Battle Pass XP, and new
+  challenges appear each day.
 - **Shop:** buy cars, drivers, hats, paint colours, paint finishes (Matte,
   Metallic, Neon), rims and boost trails. Tap an item to preview it on your
-  kart. Three items are 30% off each day.
-- **Season Pass (Season 1 · Turbo Fever):** 30 tiers filled by the XP you earn
-  in matches and missions. The free row has coins and cosmetics. The premium
+  kart. Items are marked Uncommon, Rare, Epic or Legendary by price. Three items
+  are 30% off each day.
+- **Battle Pass (Season 1 · Turbo Fever):** 30 tiers filled by the XP you earn
+  in matches and challenges. The free row has coins and cosmetics. The premium
   row unlocks for 1,200 coins and adds exclusive items, including the Monster
   truck, the Ghost driver and Chrome, Rainbow and Gold finishes.
-- **Graphics:** choose Low, Medium or High under Play. High adds bloom glow;
+- **Graphics:** choose Low, Medium or High in ⚙ Settings. High adds bloom glow;
   Low turns off real-time shadows for slower phones.
 
 Your coins, unlocks and progress are saved in this browser only, so another
