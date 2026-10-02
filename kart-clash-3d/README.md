@@ -34,10 +34,34 @@ Up to 8 racers per match.
 - **Weapons from ? boxes:** machine gun, homing rockets, bouncing cannonballs,
   grenades, freezing snowballs, mines, spike spinner, invincibility, fake item
   boxes, nuke and nitro.
-- **Cars, drivers and hats:** 3 cars, 12 drivers (Ace, Kit, Rex, Bolt, Punk,
-  Skye, Panda, Bunny, Penguin, Frog, Alien, Skully), 12 hats and 8 paint
-  colours. You earn XP each match, and leveling up unlocks drivers and hats.
-  Your progress is saved in your browser.
+- **Cosmetics:** 4 cars (Kart, Buggy, Racer, Monster), 14 drivers, 19 hats,
+  16 paint colours, 7 paint finishes, 5 rim styles and 7 boost trails. Leveling
+  up unlocks drivers and hats; the rest come from the Shop and Season Pass.
+- **Graphics:** bloom glow on lights, lava and neon paint, a sun in the sky,
+  skid marks, boost trails, speed lines and a winners' podium with confetti
+  after each match.
+
+## Coins, shop and Season Pass
+
+Everything is earned in the game with **coins**. There are no real-money
+purchases.
+
+- **Earning coins:** every finished match pays coins (more for KOs and a top-3
+  finish). The daily reward pays more for each day in a row you play. Daily
+  missions (such as "Grab 15 item boxes") pay coins and Pass XP, and new
+  missions appear each day.
+- **Shop:** buy cars, drivers, hats, paint colours, paint finishes (Matte,
+  Metallic, Neon), rims and boost trails. Tap an item to preview it on your
+  kart. Three items are 30% off each day.
+- **Season Pass (Season 1 · Turbo Fever):** 30 tiers filled by the XP you earn
+  in matches and missions. The free row has coins and cosmetics. The premium
+  row unlocks for 1,200 coins and adds exclusive items, including the Monster
+  truck, the Ghost driver and Chrome, Rainbow and Gold finishes.
+- **Graphics:** choose Low, Medium or High under Play. High adds bloom glow;
+  Low turns off real-time shadows for slower phones.
+
+Your coins, unlocks and progress are saved in this browser only, so another
+device or a cleared browser starts fresh.
 
 ## How online play works
 
