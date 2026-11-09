@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --line: #e4e1d8; --text: #1f1e1c; --muted: #6f6c64;
+    --accent: #c96442; --work: #2f7d4f; --wait: #b7791f; --idle: #8a877f; --err: #b3392f;
+    --chip: #f1efe8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1917; --panel: #232220; --line: #34322e; --text: #ecebe6; --muted: #9c998f;
+      --accent: #e08a68; --work: #5cc489; --wait: #e0a845; --idle: #7d7a72; --err: #e66b5f;
+      --chip: #2c2b28;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+           position: sticky; top: 0; z-index: 2; }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .conn { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+  button { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--chip); color: var(--text); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .session { padding: 14px 16px; margin-bottom: 14px; }
+  .s-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .s-name { font-weight: 650; font-size: 15px; }
+  .s-path { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .prompt { margin: 10px 0 12px; padding: 8px 10px; background: var(--chip); border-radius: 6px;
+            border-left: 3px solid var(--accent); white-space: pre-wrap; word-break: break-word;
+            max-height: 6.5em; overflow: hidden; }
+  .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+  .st-working { color: var(--work); } .st-waiting { color: var(--wait); }
+  .st-idle, .st-done, .st-ended { color: var(--idle); } .st-quiet { color: var(--muted); }
+  .agents { display: grid; gap: 8px; }
+  .agent { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 10px; align-items: start;
+           padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .agent.sub { margin-left: 18px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--idle); margin-top: 5px; }
+  .dot.working { background: var(--work); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.waiting { background: var(--wait); }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--work) 60%, transparent); }
+                     50% { box-shadow: 0 0 0 5px transparent; } }
+  .a-name { font-weight: 600; }
+  .a-type { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .a-now { color: var(--muted); font-size: 13px; word-break: break-word; }
+  .a-now code { color: var(--text); }
+  .a-meta { color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .feed { padding: 10px 12px; max-height: calc(100vh - 100px); overflow: auto; position: sticky; top: 76px; }
+  .feed h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 2px 0 8px; }
+  .f { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; word-break: break-word; }
+  .f:last-child { border-bottom: 0; }
+  .f-time { color: var(--muted); font-size: 11.5px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .f-who { color: var(--accent); font-weight: 600; margin-right: 4px; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  .empty code { background: var(--chip); padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude Agent Dashboard</h1>
+  <span class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
+  <span class="spacer"></span>
+  <span class="conn" id="counts"></span>
+  <button id="clearBtn" title="Forget all events on the server">Clear</button>
+</header>
+<main>
+  <section id="sessions"></section>
+  <aside class="panel feed"><h2>Live activity</h2><div id="feed"></div></aside>
+</main>
+
+<script>
+const sessions = new Map();   // session_id -> session state
+const feed = [];              // newest last
+let lastId = 0, dirty = true;
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const base = p => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() || p;
+const isAgentTool = t => t === 'Agent' || t === 'Task';
+
+function describeTool(name, input) {
+  input = input || {};
+  switch (name) {
+    case 'Bash': case 'PowerShell': return ['Running', input.command];
+    case 'Read': return ['Reading', base(input.file_path)];
+    case 'Edit': case 'MultiEdit': return ['Editing', base(input.file_path)];
+    case 'Write': return ['Writing', base(input.file_path)];
+    case 'NotebookEdit': return ['Editing', base(input.notebook_path)];
+    case 'Grep': return ['Searching for', input.pattern];
+    case 'Glob': return ['Finding files', input.pattern];
+    case 'WebFetch': return ['Fetching', input.url];
+    case 'WebSearch': return ['Searching the web for', input.query];
+    case 'TodoWrite': return ['Updating to-do list', ''];
+    case 'Agent': case 'Task': return ['Starting agent', input.description];
+  }
+  if (name && name.startsWith('mcp__')) { const p = name.split('__'); return [`Using ${p[1]}`, p.slice(2).join(' ')]; }
+  return [`Using ${name}`, ''];
+}
+const toolHtml = (name, input) => { const [verb, obj] = describeTool(name, input);
+  return esc(verb) + (obj ? ' <code>' + esc(clip(obj, 140)) + '</code>' : ''); };
+
+function getSession(e) {
+  const id = e.session_id || 'unknown';
+  if (!sessions.has(id)) {
+    sessions.set(id, { id, cwd: e.cwd, prompt: '', status: 'idle', last: 0, started: 0,
+      agents: new Map([['main', { key: 'main', name: 'Main agent', type: '', status: 'idle', now: '', tools: 0 }]]),
+      byAgentId: new Map() });
+  }
+  const s = sessions.get(id);
+  if (e.cwd) s.cwd = e.cwd;
+  return s;
+}
+
+// Events from inside a subagent carry agent_id; map it to the card created by its Agent tool call.
+function agentFor(s, e) {
+  if (!e.agent_id) return s.agents.get('main');
+  if (s.byAgentId.has(e.agent_id)) return s.agents.get(s.byAgentId.get(e.agent_id));
+  const unclaimed = [...s.agents.values()].filter(a => a.key !== 'main' && !a.agentId && a.status === 'working'
+    && (!e.agent_type || !a.type || a.type === e.agent_type));
+  let a = unclaimed[0];
+  if (!a) { a = { key: e.agent_id, name: e.agent_type || 'Subagent', type: e.agent_type || '', status: 'working', now: '', tools: 0, started: Date.now() }; s.agents.set(a.key, a); }
+  a.agentId = e.agent_id; s.byAgentId.set(e.agent_id, a.key);
+  return a;
+}
+
+function apply({ ts, e }) {
+  const ev = e.hook_event_name, s = getSession(e), a = agentFor(s, e), main = s.agents.get('main');
+  s.last = ts;
+  let line = null;
+  switch (ev) {
+    case 'UserPromptSubmit':
+      s.prompt = e.prompt || ''; s.status = 'working'; s.started = ts;
+      main.status = 'working'; main.now = 'Thinking…';
+      line = 'You: ' + esc(clip(e.prompt, 160)); break;
+    case 'PreToolUse':
+      s.status = 'working'; a.status = 'working'; a.now = toolHtml(e.tool_name, e.tool_input);
+      if (isAgentTool(e.tool_name)) {
+        const i = e.tool_input || {};
+        s.agents.set(e.tool_use_id || ('t' + ts), { key: e.tool_use_id || ('t' + ts), name: i.description || 'Subagent',
+          type: i.subagent_type || '', status: 'working', now: esc(clip(i.prompt, 160)), tools: 0, started: ts,
+          background: !!i.run_in_background, parent: a.key });
+      }
+      line = a.now; break;
+    case 'PostToolUse':
+      a.tools++; a.now = a.key === 'main' ? 'Thinking…' : 'Working…';
+      if (isAgentTool(e.tool_name) && s.agents.has(e.tool_use_id)) {
+        const sub = s.agents.get(e.tool_use_id);
+        if (!sub.background) { sub.status = 'done'; sub.now = 'Finished'; sub.ended = ts; }
+      }
+      break;
+    case 'Notification':
+      s.status = 'waiting'; main.status = 'waiting'; main.now = esc(e.message || 'Waiting for you');
+      line = '⚠ ' + esc(e.message || 'Needs your input'); break;
+    case 'SubagentStop': {
+      if (a.key !== 'main') { a.status = 'done'; a.now = 'Finished'; a.ended = ts; }
+      line = 'Agent finished: ' + esc(a.name); break; }
+    case 'Stop':
+      s.status = 'idle'; main.status = 'idle'; main.now = 'Done — waiting for your next message';
+      for (const x of s.agents.values()) if (x.key !== 'main' && x.status === 'working' && !x.background) { x.status = 'done'; x.now = 'Finished'; }
+      line = 'Turn finished'; break;
+    case 'SessionEnd':
+      s.status = 'ended'; for (const x of s.agents.values()) { x.status = x.status === 'working' ? 'done' : x.status; }
+      line = 'Session ended'; break;
+  }
+  if (line) feed.push({ ts, who: a.key === 'main' ? base(s.cwd) || 'claude' : a.name, html: line });
+  if (feed.length > 300) feed.splice(0, feed.length - 300);
+}
+
+const time = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function dur(ms) { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s/60) + 'm ' + (s%60) + 's' : Math.floor(s/3600) + 'h ' + Math.floor(s%3600/60) + 'm'; }
+
+function render() {
+  const now = Date.now(), list = [...sessions.values()].sort((a, b) => b.last - a.last);
+  const box = document.getElementById('sessions');
+  let working = 0;
+  if (!list.length) {
+    box.innerHTML = `<div class="panel empty">No activity yet.<br><br>Start <code>claude</code> in PowerShell and give it a task —<br>its agents will show up here live.</div>`;
+  } else {
+    box.innerHTML = list.map(s => {
+      let st = s.status;
+      if (st === 'working' && now - s.last > 10 * 60e3) st = 'quiet';
+      const agents = [...s.agents.values()].filter(a => a.key === 'main' || a.status === 'working' || now - (a.ended || 0) < 5 * 60e3);
+      working += agents.filter(a => a.status === 'working' && st !== 'quiet').length;
+      return `<div class="panel session">
+        <div class="s-head"><span class="s-name">${esc(base(s.cwd) || 'Claude session')}</span>
+          <span class="pill st-${st}">${{ working: 'Working', waiting: 'Needs you', idle: 'Idle', ended: 'Ended', quiet: 'Quiet' }[st]}</span>
+          <span class="spacer"></span><span class="a-meta">updated ${time(s.last)}</span></div>
+        <div class="s-path">${esc(s.cwd || '')}</div>
+        ${s.prompt ? `<div class="prompt">${esc(s.prompt)}</div>` : '<div style="height:10px"></div>'}
+        <div class="agents">${agents.map(a => `
+          <div class="agent ${a.key === 'main' ? '' : 'sub'}">
+            <span class="dot ${a.status}"></span>
+            <div><span class="a-name">${esc(a.name)}</span>${a.type ? `<span class="a-type">${esc(a.type)}</span>` : ''}
+              <div class="a-now">${a.now || ''}</div></div>
+            <div class="a-meta">${a.tools} tool${a.tools === 1 ? '' : 's'}${a.status === 'working' && (a.started || s.started) ? '<br>' + dur(now - (a.started || s.started)) : ''}</div>
+          </div>`).join('')}</div>
+      </div>`;
+    }).join('');
+  }
+  document.getElementById('counts').textContent = `${list.length} session${list.length === 1 ? '' : 's'} · ${working} agent${working === 1 ? '' : 's'} working`;
+  document.getElementById('feed').innerHTML = feed.length
+    ? feed.slice().reverse().map(f => `<div class="f"><span class="f-time">${time(f.ts)}</span><span class="f-who">${esc(f.who)}</span>${f.html}</div>`).join('')
+    : '<div class="a-now">Waiting for events…</div>';
+  dirty = false;
+}
+
+function setConn(ok) {
+  document.getElementById('connDot').className = 'dot ' + (ok ? 'working' : 'waiting');
+  document.getElementById('connText').textContent = ok ? 'Connected' : 'Server not reachable — is server.ps1 running?';
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/events?since=' + lastId, { cache: 'no-store' });
+    const evs = await r.json();
+    for (const ev of evs) { if (ev.id <= lastId) continue; lastId = ev.id; try { apply(ev); } catch (err) { console.warn(err, ev); } dirty = true; }
+    setConn(true);
+  } catch { setConn(false); }
+  setTimeout(poll, 1000);
+}
+
+document.getElementById('clearBtn').onclick = async () => {
+  if (!confirm('Clear all recorded activity?')) return;
+  await fetch('/clear', { method: 'POST' }).catch(() => {});
+  sessions.clear(); feed.length = 0; lastId = 0; dirty = true;
+};
+setInterval(() => render(), 1000);   // also refreshes timers
+poll(); render();
+</script>
+</body>
+</html>
