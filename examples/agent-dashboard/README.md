@@ -31,14 +31,27 @@ fail quietly.
 
 ## What you'll see
 
-**Office view** (the default): each Claude session is a little office.
+**Office view** (the default) is a little animated office building:
 
-- The **lead agent** sits at the big desk, with a bubble showing what it's doing right now.
-- When it starts a helper agent, the helper **walks in, gets its task** in a
-  speech bubble ("Can you write login tests?"), and goes to its own desk.
-- When a helper finishes, it **walks back to report** ("Done!"), then leaves.
-- **You** walk in through the door when you send a message. When Claude needs
-  your permission, the lead walks over to you at the door and asks.
+- **Each Claude session gets its own floor**, with its folder name on the
+  wall sign and a status light (green working, yellow needs you, grey idle).
+- The **lead agent** sits at the big desk. Their screens light up and a chip
+  above their head shows what they're doing ("✏️ Editing Login.tsx").
+- When you send a message, **you** walk in the front door, say hi to
+  reception, take the glass elevator up and tell the lead your request. The lead
+  writes it on the **whiteboard**.
+- When the lead starts helper agents, **the helpers ride the elevator up**,
+  line up to get their task ("Can you write login tests?"), then work at their
+  own desks with code scrolling on screen. Their tasks appear on the
+  whiteboard and get ticked off.
+- When a helper finishes, it **walks back to report** ("Done! ✅"), gets a
+  thank-you and a burst of confetti, then rides the elevator home.
+- When Claude needs your permission, the **lead's phone rings** and a "!"
+  bounces over their head. After a finished turn, they go grab a coffee.
+- The sky follows **your real time of day**: sun, moon, stars, clouds,
+  city lights at night and cars driving by. Clocks on the walls show the real
+  time. Add `?hour=21` to the address to preview night.
+- **Hover over anyone** to see who they are and what they're working on.
 
 **List view** shows the same thing as plain cards. Switch with the buttons at the top.
 

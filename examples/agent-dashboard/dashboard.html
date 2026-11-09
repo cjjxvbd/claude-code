@@ -9,18 +9,12 @@
     --bg: #f6f5f1; --panel: #ffffff; --line: #e4e1d8; --text: #1f1e1c; --muted: #6f6c64;
     --accent: #c96442; --work: #2f7d4f; --wait: #b7791f; --idle: #8a877f; --err: #b3392f;
     --chip: #f1efe8;
-    --floor: #efe6d6; --tile: rgba(120,90,50,.08); --wall: #e3d6c1; --rug: #e6c9b4; --window: #bfe0f0;
-    --door: #a77a52; --desk: #c99e6d; --desk-edge: #a67d50; --screen-on: #4f9fd8;
-    --bubble: #ffffff; --bubble-text: #1f1e1c; --dim: rgba(0,0,0,.25);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #1a1917; --panel: #232220; --line: #34322e; --text: #ecebe6; --muted: #9c998f;
       --accent: #e08a68; --work: #5cc489; --wait: #e0a845; --idle: #7d7a72; --err: #e66b5f;
       --chip: #2c2b28;
-      --floor: #2a2826; --tile: rgba(255,255,255,.035); --wall: #36332f; --rug: #3d322c; --window: #2d4656;
-      --door: #6e5038; --desk: #7b5b3e; --desk-edge: #5e4530; --screen-on: #3d8fcf;
-      --bubble: #f4f2ec; --bubble-text: #1f1e1c; --dim: rgba(0,0,0,.4);
     }
   }
   * { box-sizing: border-box; }
@@ -35,7 +29,7 @@
   button { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
            border: 1px solid var(--line); background: var(--chip); color: var(--text); }
   main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px 20px; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); padding: 12px 16px; } }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
   .session { padding: 14px 16px; margin-bottom: 14px; }
   .s-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -71,7 +65,12 @@
   .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   .tabs button { border: 0; border-radius: 0; background: transparent; }
   .tabs button.on { background: var(--chip); font-weight: 600; }
-  #office canvas { display: block; width: 100%; }
+  #office { position: relative; overflow-x: auto; overflow-y: hidden; border-radius: 12px; border: 1px solid var(--line); background: #1d2a52; }
+  #office canvas { display: block; margin: 0 auto; }
+  .tip { position: absolute; z-index: 3; pointer-events: none; max-width: 240px; padding: 8px 10px; border-radius: 8px;
+         background: rgba(24,26,33,.94); color: #f4f6fa; font-size: 12.5px; line-height: 1.35; box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+  .tip b { display: block; font-size: 13px; margin-bottom: 2px; }
+  .tip span { display: block; color: #c9ccd6; word-break: break-word; }
   [hidden] { display: none !important; }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
   .empty code { background: var(--chip); padding: 2px 6px; border-radius: 4px; }
@@ -88,7 +87,7 @@
 </header>
 <main>
   <section>
-    <div id="office"><canvas id="officeCanvas"></canvas></div>
+    <div id="office"><canvas id="officeCanvas" aria-label="Animated office building showing your Claude agents"></canvas><div id="officeTip" class="tip" hidden></div></div>
     <div id="sessions" hidden></div>
   </section>
   <aside class="panel feed"><h2>Live activity</h2><div id="feed"></div></aside>
@@ -169,7 +168,7 @@ function apply({ ts, e }) {
           type: i.subagent_type || '', status: 'working', now: esc(clip(i.prompt, 160)), tools: 0, started: ts,
           background: !!i.run_in_background, parent: a.key });
         office.spawn(s, s.agents.get(e.tool_use_id || ('t' + ts)), live);
-      } else office.tool(s, a, plain(), live);
+      } else office.tool(s, a, plain(), live, e.tool_name);
       line = a.now; break;
     case 'PostToolUse':
       a.tools++; a.now = a.key === 'main' ? 'Thinking…' : 'Working…';
@@ -253,290 +252,1018 @@ async function poll() {
   setTimeout(poll, 1000);
 }
 
-// ---------------- Office view: little people who walk over and talk ----------------
+// ---------------- Office building view ----------------
+// Each Claude session is one floor of a little office building. Agents ride the
+// elevator, walk over to each other, talk in speech bubbles and work at their desks.
 const office = (() => {
-  const RW = 560, RH = 330;                       // room size in room units
-  const DOOR = { x: 30, y: 205 };
-  const BOSS = { x: 290, y: 108 };
-  const SLOTS = [{ x: 110, y: 262 }, { x: 225, y: 262 }, { x: 340, y: 262 }, { x: 455, y: 262 }, { x: 470, y: 160 }, { x: 110, y: 120 }];
-  const seat = d => ({ x: d.x, y: d.y - 20 });
-  const SPOTS = [-38, 38, -110, 110, -180, 180];
-  const front = (d, r, c) => { let i = 0; if (r) { r.spots = r.spots || []; i = r.spots.indexOf(c.key); if (i < 0) { i = r.spots.indexOf(null); if (i < 0) i = r.spots.length; r.spots[i] = c.key; } } return { x: d.x + SPOTS[i % SPOTS.length], y: d.y + 44 }; };
-  const unspot = (r, c) => { if (r.spots) { const i = r.spots.indexOf(c.key); if (i >= 0) r.spots[i] = null; } };
-  const SHIRTS = ['#4c8bd6', '#3fa37a', '#9a6bd1', '#d0864a', '#d05c7a', '#3aa0a8', '#b59a2c'];
-  const HAIR = ['#2b2118', '#6b4423', '#c9a15b', '#a33b20', '#3d3d3d', '#e8e2d0'];
-  const SKIN = ['#f2cfb3', '#d9a57e', '#b97b52', '#8a5636', '#f5d9c4'];
-  const hash = str => { let h = 7; for (const c of String(str)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
-  const rooms = new Map();
-  let order = 0;
+  const canvas = document.getElementById('officeCanvas'), ctx = canvas.getContext('2d');
+  const wrapEl = document.getElementById('office'), tip = document.getElementById('officeTip');
+  const params = new URLSearchParams(location.search);
 
-  function person(key, name, x, y, shirt) {
-    const h = hash(key);
-    return { key, name, x, y, shirt: shirt || SHIRTS[h % SHIRTS.length], hair: HAIR[(h >> 3) % HAIR.length],
-      skin: SKIN[(h >> 6) % SKIN.length], queue: [], cur: null, bubble: null, sticky: '', seated: false,
-      walking: false, phase: Math.random() * 6, alpha: 0, facing: 1 };
+  // ---- world layout (world units; scaled to fit the page) ----
+  const WW = 1400, BX0 = 140, BW = 1120, BX1 = BX0 + BW, L = x => BX0 + x;
+  const FH = 270, LOBBY_H = 250, SKY_H = 210, STREET_H = 130;
+  const IN0 = L(104), IN1 = L(1110);
+  const SH = { x0: L(14), x1: L(98), cx: L(56) };
+  const EXIT = L(140), AISLE = .97;
+  const LEAD = { x: L(255), z: .42, dz: .56 };
+  const VISIT = [L(352), L(410), L(468), L(526)];
+  const BOARD = { x0: L(385), x1: L(575), cx: L(480) };
+  const DESKS = [{ x: L(645), z: .14 }, { x: L(775), z: .14 }, { x: L(905), z: .14 }, { x: L(710), z: .86 }, { x: L(840), z: .86 }, { x: L(970), z: .86 }];
+  const COFFEE = { x: L(1040), z: .32 };
+  const ENTRANCE = L(1085), STAFF_DOOR = L(188), RECEPTION = L(600);
+  const LOBBY = { k: 0, lobby: true };
+  const PROPS = ['mug', 'plant', 'duck', 'lamp', 'papers', 'photo'];
+
+  const SKIN = ['#f6d5bd', '#eac09e', '#d6a079', '#b57e55', '#8d5a3a', '#6b4430'];
+  const HAIR = ['#2a1d15', '#5a3a22', '#8b5a2b', '#c99a52', '#e3c27a', '#a63c22', '#3b3b40', '#d9d4c7'];
+  const SHIRT = ['#4f86c6', '#4aa57f', '#9a6cc8', '#d58a4a', '#d2607e', '#3fa3ad', '#b8a03a', '#6c7a89', '#e0b84f'];
+  const PANTS = ['#2f3a4f', '#3d3a36', '#4b5563', '#2b4a6b', '#5a4632'];
+  const WALLS = [['#ece2ce', '#cdbd9f', '#b98d5f'], ['#e1eadd', '#b9c9b2', '#a77d55'], ['#dfe6f0', '#b7c4d6', '#8f99a6'],
+                 ['#f0e1dc', '#d1b5ad', '#9c7a5a'], ['#e7e0f1', '#c4b8d8', '#b08960'], ['#f1e9d4', '#d4c49c', '#8a6e50']];
+
+  // ---- small helpers ----
+  const hash = s => { let h = 2166136261; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+  const rng = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const mixCache = new Map();
+  const mix = (a, b, t) => {
+    t = Math.round(Math.max(0, Math.min(1, t)) * 40) / 40;
+    const key = a + b + t; let v = mixCache.get(key); if (v) return v;
+    const A = [1, 3, 5].map(i => parseInt(a.slice(i, i + 2), 16)), B = [1, 3, 5].map(i => parseInt(b.slice(i, i + 2), 16));
+    v = '#' + A.map((x, i) => Math.round(x + (B[i] - x) * t).toString(16).padStart(2, '0')).join('');
+    mixCache.set(key, v); return v;
+  };
+  const shade = (c, t) => t < 0 ? mix(c, '#000000', -t) : mix(c, '#ffffff', t);
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  const lc = s => s.replace(/^./, m => m.toLowerCase());
+  const PI = Math.PI;
+  function box(c, x, y, w, h, r = 0) { ctx.fillStyle = c; if (r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); } else ctx.fillRect(x, y, w, h); }
+  function oval(c, x, y, rx, ry, a0 = 0, a1 = PI * 2) { ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, a0, a1); ctx.fill(); }
+  function line(c, w, pts) { ctx.strokeStyle = c; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke(); }
+  function poly(c, pts) { ctx.fillStyle = c; ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.fill(); }
+  function txt(c, font, s, x, y, align = 'left', base = 'alphabetic') { ctx.fillStyle = c; ctx.font = font; ctx.textAlign = align; ctx.textBaseline = base; ctx.fillText(s, x, y); }
+  const UI = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+  const HAND = '"Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive';
+  const ICONS = { Bash: '⌨️', PowerShell: '⌨️', Read: '📖', Edit: '✏️', MultiEdit: '✏️', Write: '📝', NotebookEdit: '📓', Grep: '🔍', Glob: '🗂️',
+    WebFetch: '🌐', WebSearch: '🔎', TodoWrite: '✅', Agent: '🤝', Task: '🤝' };
+  const iconFor = t => ICONS[t] || (t && t.startsWith('mcp__') ? '🔌' : '🛠️');
+
+  // ---- state ----
+  const rooms = new Map();
+  let order = 0, people = [], parts = [], hits = [];
+  const el = { k: 0, doors: 0, jobs: [], cur: null };
+  let lay = { N: 0 }, T = {}, sc = 1, fs = 1;
+
+  function top(k) { return k === 0 ? lay.lobbyTop : lay.floorsTop + (lay.N - k) * FH; }
+  function ground(k, z) { return k === 0 ? lay.lobbyTop + 212 + z * 28 : top(k) + 222 + z * 30; }
+  const kOf = loc => loc === LOBBY ? 0 : (loc.k ?? 0);
+  const inBuilding = loc => loc === LOBBY || [...rooms.values()].includes(loc);
+  function carBottom(k) { const a = Math.floor(k), b = Math.ceil(k), t = k - a, ga = ground(a, .5) + 4, gb = ground(b, .5) + 4; return ga + (gb - ga) * t; }
+
+  function person(key, name, role) {
+    const h = hash(key + name);
+    const S = { skin: SKIN[h % SKIN.length], hair: HAIR[(h >>> 4) % HAIR.length], hs: (h >>> 8) % 6, shirt: SHIRT[(h >>> 11) % SHIRT.length],
+      pants: PANTS[(h >>> 15) % PANTS.length], glasses: (h >>> 18) % 10 < 3, shoe: '#2a2a30', lanyard: SHIRT[(h >>> 21) % SHIRT.length] };
+    if (role === 'lead') Object.assign(S, { shirt: '#f3efe6', blazer: '#34425f', tie: '#d9774f', pants: '#2d3446' });
+    if (role === 'you') Object.assign(S, { shirt: '#59708f', hoodie: true, pants: '#2c3444', hs: 0, glasses: false, hair: '#2a1d15' });
+    if (role === 'npc') Object.assign(S, { shirt: '#8a5a9e', hs: 1, hair: '#3b2414', glasses: true });
+    return { key, name, role, S, loc: LOBBY, x: 0, z: .5, facing: 0, seated: false, queue: [], cur: null, bubble: null, sticky: null,
+      walking: false, phase: Math.random() * 6, alpha: 1, blink: 1 + Math.random() * 4, blinkT: 0, holding: null, inCar: false,
+      speed: role === 'you' ? 260 : 170 };
   }
-  const speak = (c, text, ms = 2500) => { c.bubble = { text, until: performance.now() + ms }; };
-  const walk = (to) => ({ t: 'walk', to });
+  const reception = Object.assign(person('reception', 'Reception', 'npc'), { x: RECEPTION, z: .36, seated: true });
+  people.push(reception);
+
+  // ---- actions ----
+  const walk = (x, z, direct) => ({ t: 'walk', x, z, direct });
   const wait = ms => ({ t: 'wait', ms });
   const run = fn => ({ t: 'do', fn });
+  const ride = to => ({ t: 'ride', to });
+  const sit = () => ({ t: 'sit' }), stand = () => ({ t: 'stand' }), fade = () => ({ t: 'fade' }), face = f => ({ t: 'face', f });
+  const speak = (p, text, ms = 2600) => { p.bubble = { text, until: performance.now() + ms, talk: true }; };
 
+  function begin(p, k, now) {
+    switch (k.t) {
+      case 'walk':
+        p.seated = false;
+        if (!k.direct && Math.abs(p.z - k.z) > .2 && Math.abs(p.x - k.x) > 30) {
+          p.queue.unshift(walk(k.x, k.z, true)); p.queue.unshift(walk(k.x, AISLE, true));
+          k.x = p.x; k.z = AISLE;
+        }
+        break;
+      case 'ride':
+        if (p.loc === k.to) { p.cur = null; break; }
+        if (el.jobs.length >= 4 || !inBuilding(k.to)) { p.loc = inBuilding(k.to) ? k.to : LOBBY; p.x = EXIT; p.z = .6; p.cur = null; break; }
+        k.job = { rider: p, from: p.loc, to: k.to, done: false }; el.jobs.push(k.job); break;
+      case 'sit': p.seated = true; p.facing = 0; p.cur = null; break;
+      case 'stand': p.seated = false; p.cur = null; break;
+      case 'face': p.facing = k.f; p.cur = null; break;
+      case 'do': p.cur = null; k.fn(); break;
+      case 'fade': p.fading = true; break;
+      case 'write': p.facing = 2; p.holding = 'marker'; k.room.board.prompt = k.text; k.room.board.shown = 0;
+        k.room.board.tasks = k.room.board.tasks.filter(t => !t.done); break;
+    }
+  }
+  function tick(p, k, dt, now) {
+    if (k.t === 'walk') {
+      const dx = k.x - p.x, dz = (k.z - p.z) * 70, d = Math.hypot(dx, dz), v = p.speed * dt;
+      if (d <= v) { p.x = k.x; p.z = k.z; p.cur = null; return; }
+      p.x += dx / d * v; p.z += dz / d * v / 70; p.walking = true;
+      p.facing = Math.abs(dx) > Math.abs(dz) * .5 ? Math.sign(dx) : dz > 0 ? 0 : 2;
+    } else if (k.t === 'wait') { if (now - k.t0 >= k.ms) p.cur = null; }
+    else if (k.t === 'ride') { if (k.job && k.job.done) p.cur = null; }
+    else if (k.t === 'fade') { p.alpha -= dt * 2.2; if (p.alpha <= 0) { p.gone = true; p.cur = null; } }
+    else if (k.t === 'write') {
+      const b = k.room.board, f = Math.min(1, (now - k.t0) / k.ms);
+      b.shown = Math.floor(k.text.length * f);
+      if (f >= 1) { b.shown = k.text.length; p.holding = null; p.cur = null; }
+    }
+  }
+  function stepP(p, dt, now) {
+    p.walking = false;
+    if (!p.inCar) {
+      if (!p.cur && p.queue.length) { if (p.queue.length > 40) p.queue = p.queue.slice(-40); p.cur = p.queue.shift(); p.cur.t0 = now; p.cur.init = false; }
+      const k = p.cur;
+      if (k) { if (!k.init) { k.init = true; begin(p, k, now); } if (p.cur === k) tick(p, k, dt, now); }
+    } else if (p.cur && p.cur.job && p.cur.job.done) p.cur = null;
+    if (!p.fading) p.alpha = Math.min(1, p.alpha + dt * 2.5);
+    p.phase += dt * (p.walking ? 11 : 3);
+    p.blink -= dt; if (p.blink < 0) { p.blinkT = .13; p.blink = 2 + Math.random() * 4; } p.blinkT -= dt;
+    if (p.bubble && now > p.bubble.until) p.bubble = null;
+  }
+
+  function stepEl(dt) {
+    const E = el;
+    if (!E.cur) {
+      if (!E.jobs.length) { E.doors = Math.max(0, E.doors - dt * 2); return; }
+      const j = E.jobs.shift(), g = [j];
+      for (let i = E.jobs.length - 1; i >= 0; i--) if (E.jobs[i].from === j.from && E.jobs[i].to === j.to && g.length < 3) g.push(E.jobs.splice(i, 1)[0]);
+      E.cur = { g, from: j.from, to: j.to, ph: 'close0' };
+    }
+    const c = E.cur, kf = kOf(c.from), kt = inBuilding(c.to) ? kOf(c.to) : 0;
+    const move = target => { const d = target - E.k, v = 2.4 * dt; if (Math.abs(d) <= v) { E.k = target; return true; } E.k += Math.sign(d) * v; return false; };
+    const doors = o => { E.doors = o ? Math.min(1, E.doors + dt * 3) : Math.max(0, E.doors - dt * 3); return o ? E.doors >= 1 : E.doors <= 0; };
+    const slot = i => SH.cx - 14 + i * 14;
+    const walkR = (p, x) => { const d = x - p.x, v = 130 * dt; if (Math.abs(d) > .5) p.facing = Math.sign(d); if (Math.abs(d) <= v) { p.x = x; return true; } p.x += Math.sign(d) * v; p.walking = true; return false; };
+    c.g = c.g.filter(j => !j.rider.gone);
+    if (!c.g.length) { E.cur = null; return; }
+    switch (c.ph) {
+      case 'close0': if (doors(false)) c.ph = 'go'; break;
+      case 'go': if (move(kf)) c.ph = 'open1'; break;
+      case 'open1': if (doors(true)) c.ph = 'board'; break;
+      case 'board': {
+        let all = true;
+        c.g.forEach((j, i) => { const p = j.rider; p.seated = false; p.z += (.5 - p.z) * Math.min(1, dt * 6); if (!walkR(p, slot(i))) all = false; });
+        if (all) { c.g.forEach(j => { j.rider.inCar = true; j.rider.facing = 0; }); c.ph = 'close1'; }
+        break;
+      }
+      case 'close1': if (doors(false)) c.ph = 'travel'; break;
+      case 'travel': if (move(kt)) c.ph = 'open2'; break;
+      case 'open2': if (doors(true)) { const dest = inBuilding(c.to) ? c.to : LOBBY; c.g.forEach(j => { j.rider.inCar = false; j.rider.loc = dest; j.rider.z = .5; }); c.ph = 'exit'; } break;
+      case 'exit': {
+        let all = true;
+        c.g.forEach((j, i) => { if (!walkR(j.rider, EXIT + i * 18)) all = false; });
+        if (all) { c.g.forEach(j => j.done = true); E.cur = null; }
+        break;
+      }
+    }
+  }
+
+  // ---- rooms, workers, scripted scenes ----
   function room(s) {
     let r = rooms.get(s.id);
     if (!r) {
-      const b = person('boss' + s.id, 'Lead agent', seat(BOSS).x, seat(BOSS).y, '#c96442');
-      b.seated = true; b.alpha = 1;
-      r = { sid: s.id, order: order++, people: new Map([['main', b]]), slots: [], boss: b, you: null, away: false };
-      rooms.set(s.id, r);
+      const h = hash(s.id), W = WALLS[h % WALLS.length];
+      r = { sid: s.id, order: order++, k: rooms.size + 1, pal: { wall: W[0], wains: W[1], floor: W[2] }, desks: Array(DESKS.length).fill(null),
+        spots: [], board: { prompt: '', shown: 0, tasks: [] }, waiting: false, idleSince: 0, brewing: 0,
+        props: DESKS.map((_, i) => PROPS[((h >>> (i * 3)) + i) % PROPS.length]) };
+      const lead = Object.assign(person('lead' + s.id, 'Lead agent', 'lead'), { loc: r, owner: r, x: LEAD.x, z: LEAD.z, seated: true });
+      r.lead = lead; people.push(lead); rooms.set(s.id, r);
     }
     return r;
   }
-  function freeSlot(r) { for (let i = 0; i < SLOTS.length; i++) if (!r.slots[i]) return i; return r.slots.length % SLOTS.length; }
   function worker(r, a, instant) {
-    let w = r.people.get(a.key);
+    let w = people.find(p => p.owner === r && p.agentKey === a.key && !p.gone);
     if (w) return w;
-    const i = freeSlot(r);
-    w = person(a.key, a.name, DOOR.x, DOOR.y); w.slot = i; r.slots[i] = a.key;
-    if (instant) { Object.assign(w, seat(SLOTS[i])); w.seated = true; w.alpha = 1; }
-    r.people.set(a.key, w);
-    return w;
+    let i = r.desks.indexOf(null); if (i < 0) i = Math.floor(Math.random() * DESKS.length);
+    w = Object.assign(person(a.key, a.name, 'worker'), { owner: r, agentKey: a.key, agent: a, desk: i, loc: r });
+    r.desks[i] = a.key;
+    if (instant) Object.assign(w, { x: DESKS[i].x + 6, z: DESKS[i].z - .13, seated: true });
+    people.push(w); return w;
   }
-  function you(r) {
-    if (!r.you || r.you.leaving) {
-      r.you = person('you', 'You', DOOR.x - 6, DOOR.y, '#5b5b66');
-      r.you.hair = '#2b2118'; r.people.set('you' + Math.random(), r.you);
-    }
-    return r.you;
+  const back = i => i < 3;
+  function deskIn(w) {
+    const d = DESKS[w.desk], sx = d.x + 6;
+    if (!back(w.desk)) return [walk(sx, AISLE), walk(sx, d.z - .13, true), sit()];
+    const gx = d.x + 58; return [walk(gx, .45, true), walk(gx, .01, true), walk(sx, .01, true), sit()];
   }
-  function leave(c) { c.leaving = true; c.queue.push(walk(() => DOOR), { t: 'fade' }); }
-  function bossHome(r, live) {
-    if (!r.away) return;
-    r.away = false;
-    if (live) r.boss.queue.push(walk(() => seat(BOSS)), { t: 'sit' });
-    else { r.boss.queue = []; r.boss.cur = null; Object.assign(r.boss, seat(BOSS)); r.boss.seated = true; }
-    if (r.you && !r.you.leaving) leave(r.you);
+  function deskOut(w) {
+    const d = DESKS[w.desk];
+    if (!back(w.desk)) return [walk(d.x + 6, AISLE, true)];
+    const gx = d.x + 58; return [walk(gx, .01, true), walk(gx, .45, true)];
+  }
+  function spotX(r, p) { let i = r.spots.indexOf(p.key); if (i < 0) { i = r.spots.indexOf(null); if (i < 0) i = r.spots.length; r.spots[i] = p.key; } return VISIT[i % VISIT.length] + Math.floor(i / VISIT.length) * 20; }
+  function unspot(r, p) { const i = r.spots.indexOf(p.key); if (i >= 0) r.spots[i] = null; }
+  function leadBack(r) {
+    const l = r.lead; if (l.mode !== 'coffee') return;
+    l.mode = null; l.queue = []; l.cur = null; l.holding = null; r.brewing = 0;
+    l.queue.push(walk(LEAD.x, LEAD.z, true), sit());
+  }
+  function toBoard(r, text) {
+    const l = r.lead; leadBack(r);
+    l.mode = 'board';
+    l.queue.push(stand(), walk(LEAD.x, .1, true), walk(BOARD.cx, .1, true), face(2), { t: 'write', ms: 2800, text, room: r },
+      walk(LEAD.x, .1, true), walk(LEAD.x, LEAD.z, true), sit(), run(() => { l.mode = null; }));
+  }
+  function headPos(p) { const k = kOf(p.loc); return { x: p.x, y: (p.inCar ? carBottom(el.k) : ground(k, p.z)) - 80 }; }
+  function confetti(p) {
+    const { x, y } = headPos(p);
+    for (let i = 0; i < 26; i++) parts.push({ kind: 'conf', x, y, vx: (Math.random() - .5) * 160, vy: -60 - Math.random() * 120, life: 1.6, max: 1.6, color: pick(['#f2b134', '#e85d75', '#4aa57f', '#4f86c6', '#9a6cc8']), rot: Math.random() * 6 });
   }
 
+  // ---- public API (called from apply()) ----
   const api = {
     prompt(s, text, live) {
-      const r = room(s); bossHome(r, live);
-      r.boss.sticky = 'Thinking…';
-      if (!live) return;
-      const y = you(r);
-      y.queue.push(walk(() => front(BOSS, r, y)), run(() => speak(y, clip(text, 90), 3200)), wait(3000),
-        run(() => speak(r.boss, 'On it!', 1600)), wait(900), run(() => unspot(r, y)));
-      leave(y);
+      const r = room(s); leadBack(r);
+      r.waiting = false; r.idleSince = 0; if (r.lead.holding === 'phone') r.lead.holding = null;
+      r.lead.sticky = { icon: '💭', text: 'Thinking…' };
+      if (!live) { r.board.prompt = text; r.board.shown = text.length; r.board.tasks = []; return; }
+      const y = Object.assign(person('you' + Math.random(), 'You', 'you'), { owner: r, loc: LOBBY, x: ENTRANCE, z: .9, alpha: 0, facing: -1 });
+      people.push(y);
+      speak(reception, pick(['Welcome back! 👋', 'Good to see you!', 'Head on up!', 'Morning! ☀️']), 2200);
+      y.queue.push(walk(EXIT, .6), ride(r), walk(spotX(r, y), .92), face(-1), run(() => speak(y, clip(text, 110), 3600)), wait(3400),
+        run(() => { speak(r.lead, pick(['Got it! Let me put that on the board.', 'On it! Writing it down.', 'Great, let’s plan this out.']), 2200); toBoard(r, text); }),
+        wait(1800), run(() => unspot(r, y)), walk(EXIT, .6), ride(LOBBY), walk(ENTRANCE, .9), fade());
     },
-    tool(s, a, text, live) {
-      const r = room(s);
-      const c = a.key === 'main' ? r.boss : worker(r, a, !live);
-      if (c === r.boss) bossHome(r, live);
-      c.sticky = text;
+    tool(s, a, text, live, tool) {
+      const r = room(s), p = a.key === 'main' ? r.lead : worker(r, a, !live);
+      if (p === r.lead) {
+        leadBack(r); r.idleSince = 0;
+        if (r.waiting) { r.waiting = false; if (p.holding === 'phone') { p.holding = null; if (live) speak(p, 'Thanks! Back to it.', 1500); } }
+      }
+      if (p.holding === 'mug') p.holding = null;
+      p.sticky = { icon: iconFor(tool), text }; p.agent = a; p.lastWork = performance.now();
     },
     spawn(s, sub, live) {
-      const r = room(s);
-      r.boss.sticky = 'Handing off a task…';
-      const w = worker(r, sub, !live);
-      w.sticky = 'Getting started…';
+      const r = room(s); r.idleSince = 0;
+      r.board.tasks.push({ name: sub.name, done: false, key: sub.key }); if (r.board.tasks.length > 6) r.board.tasks.shift();
+      r.lead.sticky = { icon: '🤝', text: 'Delegating: ' + sub.name };
+      const w = worker(r, sub, !live); w.sticky = { icon: '📋', text: sub.name };
       if (!live) return;
-      w.queue.push(walk(() => front(BOSS, r, w)),
-        run(() => speak(r.boss, 'Can you ' + clip(sub.name, 60).replace(/^./, m => m.toLowerCase()) + '?', 2600)), wait(2600),
-        run(() => speak(w, 'On it, boss!', 1500)), wait(900), run(() => unspot(r, w)), walk(() => seat(SLOTS[w.slot])), { t: 'sit' });
+      Object.assign(w, { loc: LOBBY, x: STAFF_DOOR, z: .45, alpha: 0, seated: false, facing: 1 });
+      w.queue.push(walk(EXIT, .6), ride(r), walk(spotX(r, w), .92), face(-1),
+        run(() => speak(r.lead, 'Can you ' + lc(clip(sub.name, 60)) + '?', 2600)), wait(2500),
+        run(() => speak(w, pick(['On it! 👍', 'You got it!', 'Consider it done.', 'Sure thing!']), 1600)), wait(1100),
+        run(() => unspot(r, w)), ...deskIn(w));
     },
     done(s, sub, live) {
       const r = rooms.get(s.id); if (!r) return;
-      const w = r.people.get(sub.key); if (!w || w.leaving) return;
-      w.sticky = '';
-      if (!live) { r.people.delete(sub.key); r.slots[w.slot] = null; return; }
-      w.leaving = true;
-      w.queue.push(walk(() => front(BOSS, r, w)), run(() => speak(w, 'Done! ' + clip(sub.name, 50), 2400)), wait(2400),
-        run(() => speak(r.boss, 'Great work, thanks!', 1800)), wait(1200), run(() => unspot(r, w)), walk(() => DOOR), { t: 'fade' },
-        run(() => { r.slots[w.slot] = null; }));
+      const t = r.board.tasks.find(t => t.key === sub.key); if (t) t.done = true;
+      const w = people.find(p => p.owner === r && p.agentKey === sub.key && !p.leaving && !p.gone); if (!w) return;
+      w.leaving = true; w.sticky = null;
+      const free = () => { if (r.desks[w.desk] === sub.key) r.desks[w.desk] = null; };
+      if (!live) { free(); w.gone = true; return; }
+      w.queue.push(stand(), ...deskOut(w), walk(spotX(r, w), .92), face(-1),
+        run(() => { speak(w, 'Done! ✅ ' + clip(sub.name, 50), 2600); confetti(w); }), wait(2500),
+        run(() => speak(r.lead, pick(['Great work! 🙌', 'Nice job, thanks!', 'Perfect 👌', 'Awesome!']), 1800)), wait(1300),
+        run(() => { unspot(r, w); free(); }), walk(EXIT, .6), ride(LOBBY), walk(STAFF_DOOR, .45), fade());
     },
     notify(s, msg, live) {
-      const r = room(s);
-      r.boss.sticky = '';
-      if (!live) { r.away = false; r.boss.sticky = '⚠ ' + clip(msg, 60); return; }
-      r.away = true;
-      r.boss.queue.push(walk(() => ({ x: DOOR.x + 70, y: DOOR.y })), run(() => { const y = you(r); y.alpha = 1; y.x = DOOR.x + 22; }),
-        run(() => speak(r.boss, clip(msg, 90), 6000)), wait(6000), run(() => { r.boss.sticky = 'Waiting on you…'; }));
+      const r = room(s), l = r.lead; leadBack(r);
+      r.waiting = true; l.sticky = { icon: '⏳', text: 'Waiting for you' };
+      if (!live) return;
+      if (l.mode !== 'board') l.holding = 'phone';
+      speak(l, '📞 ' + clip(msg, 100), 7000);
     },
     stop(s, live) {
-      const r = room(s); bossHome(r, live);
-      r.boss.sticky = '';
-      if (live) speak(r.boss, 'All done ✓', 3000);
+      const r = room(s), l = r.lead; leadBack(r);
+      r.waiting = false; if (l.holding === 'phone') l.holding = null;
+      l.sticky = null; r.idleSince = performance.now();
+      if (!live) return;
+      speak(l, pick(['All done ✓', 'Finished! ✨', 'That’s a wrap ✓']), 2600);
+      if (l.mode) return;
+      l.mode = 'coffee';
+      l.queue.push(wait(2800), stand(), walk(COFFEE.x, COFFEE.z, true), face(2), run(() => { r.brewing = performance.now(); }), wait(2600),
+        run(() => { r.brewing = 0; l.holding = 'mug'; }), walk(LEAD.x, LEAD.z, true), sit(),
+        run(() => { l.mode = null; l.sticky = { icon: '☕', text: 'Ready for the next task' }; }));
     },
-    end(s) { const r = rooms.get(s.id); if (r) r.ended = true; },
-    clear() { rooms.clear(); },
-    count: () => rooms.size,
+    end(s) { const r = rooms.get(s.id); if (r) { r.ended = true; r.endedAt = Date.now(); } },
+    clear() { rooms.clear(); people = [reception]; el.jobs = []; el.cur = null; parts = []; },
   };
 
-  // ---- simulation ----
-  function step(c, dt, now) {
-    if (!c.cur && c.queue.length) {
-      if (c.queue.length > 16) c.queue = c.queue.slice(-16);
-      c.cur = c.queue.shift(); c.cur.start = now;
-    }
-    const k = c.cur;
-    c.walking = false;
-    if (k) {
-      if (k.t === 'walk') {
-        const to = k.target || (k.target = k.to()); c.seated = false;
-        const dx = to.x - c.x, dy = to.y - c.y, d = Math.hypot(dx, dy), v = 120 * dt;
-        if (Math.abs(dx) > 1) c.facing = Math.sign(dx);
-        if (d <= v) { c.x = to.x; c.y = to.y; c.cur = null; } else { c.x += dx / d * v; c.y += dy / d * v; c.walking = true; }
-      } else if (k.t === 'wait') { if (now - k.start >= k.ms) c.cur = null; }
-      else if (k.t === 'do') { k.fn(); c.cur = null; }
-      else if (k.t === 'sit') { c.seated = true; c.cur = null; }
-      else if (k.t === 'fade') { c.alpha -= dt * 2; if (c.alpha <= 0) { c.gone = true; c.cur = null; } }
-    }
-    if (!c.leaving || c.cur?.t !== 'fade') c.alpha = Math.min(1, c.alpha + dt * 3);
-    c.phase += dt * (c.walking ? 12 : 4);
-    if (c.bubble && now > c.bubble.until) c.bubble = null;
+  // ---- time of day ----
+  function sky() {
+    const d = new Date(), h = params.has('hour') ? +params.get('hour') : d.getHours() + d.getMinutes() / 60;
+    const e = Math.sin((h - 6) / 12 * PI);
+    const dark = Math.max(0, Math.min(1, (.12 - e) / .32)), dusk = Math.max(0, 1 - Math.abs(e - .02) / .28);
+    T = { h, e, dark, dusk,
+      top: mix(mix('#5fa8e8', '#3d5a9e', dusk * .5), '#081028', dark),
+      low: mix(mix('#cfe9f7', '#f5b07a', dusk), '#1d2a52', dark) };
   }
 
-  // ---- drawing ----
-  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+  // ---- environment ----
+  const rand = rng(42);
+  const clouds = Array.from({ length: 7 }, (_, i) => ({ x: rand() * WW, y: 25 + rand() * 120, s: .6 + rand() * .8, v: 4 + rand() * 8 }));
+  const stars = Array.from({ length: 90 }, () => ({ x: rand() * WW, y: rand() * 1, tw: rand() * 6 }));
+  const skyline = []; for (let x = -20; x < WW;) { const w = 40 + rand() * 70, h = 90 + rand() * 260; skyline.push({ x, w, h, c: pick(['#8796ad', '#9aa6b8', '#7b8aa3', '#a4aec0']), seed: rand() * 1e9 | 0 }); x += w + rand() * 8; }
+  const cars = [];
+  let nextCar = 0;
 
-  function drawDesk(ctx, d, on, T) {
-    ctx.fillStyle = 'rgba(0,0,0,.12)'; rr(ctx, d.x - 40, d.y + 10, 80, 8, 4); ctx.fill();
-    ctx.fillStyle = T.desk; rr(ctx, d.x - 38, d.y - 4, 76, 16, 4); ctx.fill();
-    ctx.fillStyle = T.deskEdge; ctx.fillRect(d.x - 38, d.y + 8, 76, 4);
-    ctx.fillStyle = '#2a2a2e'; rr(ctx, d.x - 16, d.y - 26, 32, 22, 3); ctx.fill();
-    ctx.fillStyle = on ? T.screenOn : '#3b3d44'; rr(ctx, d.x - 13, d.y - 23, 26, 15, 2); ctx.fill();
-    if (on) { ctx.fillStyle = 'rgba(255,255,255,.7)'; for (let i = 0; i < 3; i++) ctx.fillRect(d.x - 10, d.y - 20 + i * 4, 8 + ((i * 7 + Math.floor(performance.now() / 300)) % 12), 1.5); }
-  }
-
-  function drawPerson(ctx, c, T, fs) {
-    ctx.save(); ctx.globalAlpha = Math.max(0, c.alpha);
-    const x = c.x, y = c.y, bob = c.walking ? Math.abs(Math.sin(c.phase)) * 2 : 0;
-    ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.beginPath(); ctx.ellipse(x, y + 1, 10, 3.5, 0, 0, 7); ctx.fill();
-    // legs
-    ctx.strokeStyle = '#3a3a44'; ctx.lineWidth = 4; ctx.lineCap = 'round';
-    const sw = c.walking ? Math.sin(c.phase) * 5 : 0;
-    ctx.beginPath(); ctx.moveTo(x - 3, y - 12 - bob); ctx.lineTo(x - 3 + sw, y - 1);
-    ctx.moveTo(x + 3, y - 12 - bob); ctx.lineTo(x + 3 - sw, y - 1); ctx.stroke();
-    // body + arms
-    ctx.fillStyle = c.shirt; rr(ctx, x - 8, y - 30 - bob, 16, 19, 6); ctx.fill();
-    const typing = c.seated && c.sticky;
-    const arm = typing ? Math.sin(c.phase * 3) * 2 : c.walking ? -sw * .6 : 0;
-    ctx.strokeStyle = c.shirt; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.moveTo(x - 7, y - 26 - bob); ctx.lineTo(x - 10 + (typing ? 5 : 0), y - 15 - bob + arm);
-    ctx.moveTo(x + 7, y - 26 - bob); ctx.lineTo(x + 10 - (typing ? 5 : 0), y - 15 - bob - arm); ctx.stroke();
-    // head
-    ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(x, y - 38 - bob, 8, 0, 7); ctx.fill();
-    ctx.fillStyle = c.hair; ctx.beginPath(); ctx.arc(x, y - 40 - bob, 8.2, Math.PI * 1.05, Math.PI * 1.95); ctx.fill();
-    ctx.fillStyle = '#222'; ctx.fillRect(x - 3 + c.facing, y - 38 - bob, 1.6, 2); ctx.fillRect(x + 2 + c.facing, y - 38 - bob, 1.6, 2);
-    ctx.restore();
-  }
-  function drawName(ctx, c, T, fs) {
-    if (c.alpha < .3) return;
-    ctx.save(); ctx.globalAlpha = c.alpha * .85;
-    ctx.font = `600 ${10 * fs}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-    const nm = c.name.length > 22 ? c.name.slice(0, 21) + '…' : c.name, hw = ctx.measureText(nm).width / 2 + 4;
-    ctx.fillStyle = T.text; ctx.fillText(nm, Math.min(Math.max(c.x, hw), RW - hw), c.y + (c.seated ? 44 : 12 * fs));
-    ctx.restore();
-  }
-
-  function wrap(ctx, text, maxW, maxLines) {
-    const words = String(text).split(' '), lines = []; let cur = '';
-    for (const w of words) {
-      const t = cur ? cur + ' ' + w : w;
-      if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
-      if (lines.length === maxLines) break;
+  function drawSky(now) {
+    const g = ctx.createLinearGradient(0, 0, 0, lay.streetTop); g.addColorStop(0, T.top); g.addColorStop(Math.min(.9, 400 / lay.streetTop), T.low); g.addColorStop(1, T.low);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, WW, lay.streetTop);
+    if (T.dark > .05) stars.forEach((s, i) => { ctx.globalAlpha = T.dark * (.45 + .55 * Math.sin(now / 700 + s.tw)); box('#ffffff', s.x, s.y * lay.streetTop * .9, 1.6, 1.6); });
+    ctx.globalAlpha = 1;
+    const f = (T.h - 6) / 12;
+    if (f > -.05 && f < 1.05) {
+      const x = 80 + f * (WW - 160), y = 190 - Math.sin(Math.max(0, Math.min(1, f)) * PI) * 160;
+      const rg = ctx.createRadialGradient(x, y, 4, x, y, 70); rg.addColorStop(0, 'rgba(255,230,150,.55)'); rg.addColorStop(1, 'rgba(255,230,150,0)');
+      ctx.fillStyle = rg; ctx.fillRect(x - 70, y - 70, 140, 140);
+      oval(mix('#ffe08a', '#ff9a5a', T.dusk), x, y, 22, 22);
     }
-    if (lines.length < maxLines && cur) lines.push(cur);
-    if (lines.length === maxLines && words.join(' ') !== lines.join(' ')) {
-      let l = lines[maxLines - 1]; while (l && ctx.measureText(l + '…').width > maxW) l = l.slice(0, -1); lines[maxLines - 1] = l + '…';
+    const mf = ((T.h - 18 + 24) % 24) / 12;
+    if (mf < 1) {
+      const x = 80 + mf * (WW - 160), y = 190 - Math.sin(mf * PI) * 160;
+      const rg = ctx.createRadialGradient(x, y, 4, x, y, 50); rg.addColorStop(0, 'rgba(220,230,255,.35)'); rg.addColorStop(1, 'rgba(220,230,255,0)');
+      ctx.fillStyle = rg; ctx.fillRect(x - 50, y - 50, 100, 100);
+      oval('#f1efe2', x, y, 16, 16); oval('rgba(150,150,140,.35)', x - 5, y - 3, 4, 4); oval('rgba(150,150,140,.3)', x + 4, y + 5, 3, 3);
     }
-    return lines.map(l => { while (ctx.measureText(l).width > maxW) l = l.slice(0, -2) + '…'; return l; });
+    const cc = mix('#ffffff', '#4a5576', T.dark);
+    clouds.forEach(c => {
+      ctx.globalAlpha = .85;
+      [[0, 0, 26], [22, -8, 22], [42, 2, 20], [-22, 4, 18], [12, 8, 22]].forEach(([dx, dy, r]) => oval(cc, c.x + dx * c.s, c.y + dy * c.s, r * c.s, r * c.s * .8));
+      ctx.globalAlpha = 1;
+    });
   }
-  function drawBubble(ctx, c, T, fs) {
-    const talk = c.bubble, text = talk ? talk.text : (c.seated || c === c._boss) && c.sticky;
-    if (!text || c.alpha < .5) return;
+  function drawCity() {
+    const base = lay.streetTop;
+    skyline.forEach(b => {
+      const c = mix(b.c, '#141b33', T.dark * .8);
+      box(c, b.x, base - b.h, b.w, b.h);
+      box(shade(c, -.12), b.x + b.w - 6, base - b.h, 6, b.h);
+      if (b.h > 200) box(shade(c, -.2), b.x + b.w / 2 - 1, base - b.h - 22, 2, 22);
+      const r = rng(b.seed);
+      for (let y = base - b.h + 12; y < base - 14; y += 16) for (let x = b.x + 6; x < b.x + b.w - 10; x += 12) {
+        const on = r() < .35;
+        box(on && T.dark > .2 ? `rgba(255,214,140,${.35 + T.dark * .55})` : mix(shade(b.c, .25), '#26304f', T.dark), x, y, 6, 8);
+      }
+    });
+  }
+  function tree(x, y, s) {
+    box(mix('#6b4a2f', '#2a2018', T.dark * .6), x - 5 * s, y - 70 * s, 10 * s, 70 * s, 3);
+    const g = [mix('#3f8a4f', '#16301f', T.dark * .7), mix('#4fa060', '#1c3a26', T.dark * .7), mix('#62b571', '#22442c', T.dark * .7)];
+    [[0, -95, 38, 0], [-24, -78, 28, 0], [24, -80, 30, 0], [-10, -112, 26, 1], [12, -104, 26, 1], [0, -124, 18, 2], [-18, -96, 18, 2]].forEach(([dx, dy, r, c]) => oval(g[c], x + dx * s, y + dy * s, r * s, r * s));
+  }
+  function lamp(x, y, dir) {
+    line(mix('#4a4f58', '#22252b', T.dark * .5), 4, [[x, y], [x, y - 150], [x + dir * 24, y - 158]]);
+    box('#3a3e46', x + dir * 24 - 9, y - 162, 18, 7, 3);
+    if (T.dark > .2) {
+      const g = ctx.createRadialGradient(x + dir * 24, y - 152, 2, x + dir * 24, y - 152, 90);
+      g.addColorStop(0, `rgba(255,220,150,${.5 * T.dark})`); g.addColorStop(1, 'rgba(255,220,150,0)');
+      ctx.fillStyle = g; ctx.fillRect(x + dir * 24 - 90, y - 242, 180, 180);
+      oval('#ffe7b0', x + dir * 24, y - 154, 6, 3);
+    }
+  }
+  function drawStreet(now, dt) {
+    const y = lay.streetTop;
+    box(mix('#c9c3b8', '#4a4842', T.dark * .7), 0, y, WW, 20);
+    for (let x = 0; x < WW; x += 40) box('rgba(0,0,0,.08)', x, y, 1.5, 20);
+    box(mix('#9d978c', '#38362f', T.dark * .7), 0, y + 20, WW, 4);
+    box(mix('#43464d', '#1b1c20', T.dark * .7), 0, y + 24, WW, 86);
+    for (let x = 10; x < WW; x += 60) box(mix('#e8d27a', '#6b6137', T.dark * .6), x, y + 66, 30, 3);
+    box(mix('#c9c3b8', '#4a4842', T.dark * .7), 0, y + 110, WW, 20);
+    if (now > nextCar) { nextCar = now + 3500 + Math.random() * 7000; const dir = Math.random() < .5 ? 1 : -1; cars.push({ x: dir > 0 ? -90 : WW + 90, dir, v: 140 + Math.random() * 90, c: pick(['#d9534f', '#4f86c6', '#f0c24b', '#5cb85c', '#eeeeee', '#333842', '#9a6cc8']), type: Math.random() < .25 ? 'van' : 'car' }); }
+    for (let i = cars.length - 1; i >= 0; i--) {
+      const c = cars[i]; c.x += c.dir * c.v * dt;
+      if (c.x < -120 || c.x > WW + 120) { cars.splice(i, 1); continue; }
+      const cy = y + (c.dir > 0 ? 62 : 102);
+      ctx.save(); ctx.translate(c.x, cy); ctx.scale(c.dir, 1);
+      const body = mix(c.c, '#101218', T.dark * .45);
+      if (c.type === 'van') { box(body, -38, -34, 76, 28, 6); box(mix('#bfe3f5', '#2a3b55', T.dark), 18, -30, 16, 12, 3); box(mix('#bfe3f5', '#2a3b55', T.dark), -30, -30, 40, 10, 2); }
+      else { box(body, -36, -20, 72, 16, 6); poly(body, [[-20, -20], [-10, -34], [16, -34], [26, -20]]); poly(mix('#bfe3f5', '#2a3b55', T.dark), [[-15, -21], [-8, -31], [3, -31], [3, -21]]); poly(mix('#bfe3f5', '#2a3b55', T.dark), [[6, -21], [6, -31], [15, -31], [22, -21]]); }
+      oval('#1d1e22', -22, -4, 7.5, 7.5); oval('#1d1e22', 22, -4, 7.5, 7.5); oval('#8d929b', -22, -4, 3, 3); oval('#8d929b', 22, -4, 3, 3);
+      box('#ffe9a8', 33, -16, 4, 4, 1); box('#d63c3c', -37, -16, 3, 4, 1);
+      if (T.dark > .25) { const g = ctx.createLinearGradient(36, 0, 140, 0); g.addColorStop(0, `rgba(255,236,170,${.45 * T.dark})`); g.addColorStop(1, 'rgba(255,236,170,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(36, -15); ctx.lineTo(140, -30); ctx.lineTo(140, 6); ctx.closePath(); ctx.fill(); }
+      ctx.restore();
+    }
+  }
+
+  // ---- building shell, roof, elevator ----
+  function bricks(x, y, w, h, c) {
+    box(c, x, y, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,.12)';
+    for (let yy = y, row = 0; yy < y + h; yy += 8, row++) { ctx.fillRect(x, yy, w, 1); for (let xx = x + (row % 2) * 6; xx < x + w; xx += 12) ctx.fillRect(xx, yy, 1, 8); }
+  }
+  function drawShell(now) {
+    const ft = lay.floorsTop, st = lay.streetTop, brick = mix('#a0583f', '#3a2219', T.dark * .55);
+    bricks(BX0 - 14, ft - 30, 14 + 14, st - ft + 30, brick);
+    const lt = lay.lobbyTop;
+    bricks(BX1 - 10, ft - 30, 24, lt + 100 - ft + 30, brick);
+    // entrance: glass doors in the right wall
+    box(mix('#6b7280', '#2b2f38', T.dark * .5), BX1 - 10, lt + 100, 24, 6);
+    ctx.fillStyle = 'rgba(170,215,240,.35)'; ctx.fillRect(BX1 - 8, lt + 106, 20, 106);
+    line('#8a929c', 2, [[BX1 + 2, lt + 106], [BX1 + 2, lt + 212]]);
+    box('#c7ccd3', BX1 - 2, lt + 156, 2, 14);
+    // awning
+    for (let i = 0; i < 6; i++) poly(i % 2 ? mix('#f4efe6', '#4d4a45', T.dark * .5) : mix('#d9774f', '#55301f', T.dark * .5), [[BX1 + 14 + i * 8, lt + 84], [BX1 + 22 + i * 8, lt + 84], [BX1 + 22 + i * 8, lt + 104], [BX1 + 14 + i * 8, lt + 104]]);
+    box(mix('#b0603f', '#3a2219', T.dark * .5), BX1 + 12, lt + 80, 52, 5, 2);
+    // doormat + house number
+    box('#5a4632', BX1 + 14, st - 2, 40, 3);
+    // roof: parapet + coping
+    const roofC = mix('#9b9690', '#3b3936', T.dark * .55);
+    box(roofC, BX0 - 16, ft - 30, BW + 32, 30);
+    box(shade(roofC, .2), BX0 - 20, ft - 34, BW + 40, 6, 2);
+    for (let x = BX0; x < BX1; x += 60) box('rgba(0,0,0,.08)', x, ft - 28, 2, 26);
+  }
+  function drawRoof(now) {
+    const y = lay.floorsTop - 34, d = T.dark;
+    // lift machine room
+    const mr = mix('#c9c2b6', '#4a4640', d * .6);
+    box(mr, SH.x0 - 6, y - 64, SH.x1 - SH.x0 + 12, 64, 3); box(shade(mr, -.15), SH.x0 - 10, y - 68, SH.x1 - SH.x0 + 20, 6, 2);
+    box(shade(mr, -.25), SH.cx - 12, y - 40, 24, 40, 2); oval('#d9c36a', SH.cx + 7, y - 20, 1.6, 1.6);
+    for (let i = 0; i < 4; i++) box(shade(mr, -.2), SH.x0 + 2, y - 56 + i * 5, 22, 2);
+    txt(shade(mr, -.45), `700 9px ${UI}`, 'LIFT', SH.cx, y - 46, 'center');
+    // AC units with spinning fans
+    [[L(200), 1], [L(300), 1.6]].forEach(([x, sp]) => {
+      const c = mix('#d5d8dc', '#4b4f56', d * .6);
+      box(c, x - 38, y - 40, 76, 40, 4); box(shade(c, -.15), x - 38, y - 6, 76, 6);
+      for (let i = 0; i < 6; i++) box(shade(c, -.18), x + 6 + i * 5, y - 32, 2, 22);
+      oval(shade(c, -.3), x - 16, y - 21, 14, 14); oval(shade(c, -.1), x - 16, y - 21, 3, 3);
+      ctx.save(); ctx.translate(x - 16, y - 21); ctx.rotate(now / 1000 * 8 * sp);
+      for (let i = 0; i < 3; i++) { ctx.rotate(PI * 2 / 3); poly(shade(c, -.05), [[0, 0], [12, -4], [12, 4]]); }
+      ctx.restore();
+    });
+    // neon sign
+    const sx = L(600), sy = y - 18;
+    line(mix('#555', '#222', d), 3, [[sx - 120, y], [sx - 120, sy]]); line(mix('#555', '#222', d), 3, [[sx + 120, y], [sx + 120, sy]]);
+    line(mix('#555', '#222', d), 2, [[sx - 120, y], [sx - 60, sy]]); line(mix('#555', '#222', d), 2, [[sx + 120, y], [sx + 60, sy]]);
     ctx.save();
-    ctx.font = `${talk ? 600 : 400} ${11.5 * fs}px system-ui, sans-serif`;
-    const lines = wrap(ctx, text, 150 * fs, talk ? 3 : 2), lh = 14 * fs;
-    const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 16, h = lines.length * lh + 10;
-    let bx = Math.min(Math.max(c.x - w / 2, 4), RW - w - 4); const by = Math.max(4, c.y - 52 - h);
-    ctx.globalAlpha = c.alpha * (talk ? 1 : .9);
-    ctx.fillStyle = talk ? T.bubble : T.thought; ctx.strokeStyle = T.bubbleLine; ctx.lineWidth = 1;
-    rr(ctx, bx, by, w, h, 8); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(c.x - 5, by + h - .5); ctx.lineTo(c.x, by + h + 7); ctx.lineTo(c.x + 5, by + h - .5); ctx.fill();
-    ctx.fillStyle = talk ? T.bubbleText : T.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    lines.forEach((l, i) => ctx.fillText(l, bx + 8, by + 6 + i * lh));
+    if (d > .2) { ctx.shadowColor = '#ff8a5c'; ctx.shadowBlur = 18 * d; }
+    const flick = d > .2 && Math.sin(now / 90) > .97 ? .5 : 1;
+    ctx.globalAlpha = flick;
+    txt(d > .2 ? '#ffb08a' : '#d9774f', `800 40px ${UI}`, 'CLAUDE HQ', sx + 14, sy - 6, 'center');
     ctx.restore();
+    // sunburst logo next to sign
+    ctx.save(); ctx.translate(sx - 116, sy - 20); ctx.strokeStyle = d > .2 ? '#ffb08a' : '#d9774f'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    if (d > .2) { ctx.shadowColor = '#ff8a5c'; ctx.shadowBlur = 14 * d; }
+    for (let i = 0; i < 8; i++) { ctx.rotate(PI / 4); ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(0, 15); ctx.stroke(); }
+    ctx.restore();
+    // water tower
+    const wx = L(870), wc = mix('#8a6a4a', '#33281d', d * .6);
+    line(wc, 3, [[wx - 26, y], [wx - 20, y - 40]]); line(wc, 3, [[wx + 26, y], [wx + 20, y - 40]]); line(wc, 2, [[wx - 24, y - 12], [wx + 24, y - 30]]); line(wc, 2, [[wx + 24, y - 12], [wx - 24, y - 30]]);
+    box(wc, wx - 28, y - 92, 56, 54, 4); poly(shade(wc, -.2), [[wx - 32, y - 92], [wx, y - 112], [wx + 32, y - 92]]);
+    for (let i = 0; i < 3; i++) box(shade(wc, -.25), wx - 28, y - 82 + i * 16, 56, 2);
+    // antenna with blinking light
+    const ax = L(1040);
+    line(mix('#777', '#333', d), 3, [[ax, y], [ax, y - 150]]);
+    for (let i = 0; i < 6; i++) line(mix('#777', '#333', d), 1.5, [[ax - 10 + i, y - i * 22], [ax + 10 - i, y - (i + 1) * 22]]);
+    line(mix('#777', '#333', d), 2, [[ax - 16, y - 110], [ax + 16, y - 110]]);
+    if (Math.floor(now / 700) % 2) { oval('#ff3b30', ax, y - 152, 4, 4); const g = ctx.createRadialGradient(ax, y - 152, 1, ax, y - 152, 16); g.addColorStop(0, 'rgba(255,59,48,.6)'); g.addColorStop(1, 'rgba(255,59,48,0)'); ctx.fillStyle = g; ctx.fillRect(ax - 16, y - 168, 32, 32); }
+    else oval('#7a2320', ax, y - 152, 4, 4);
+    // solar panels
+    for (let i = 0; i < 3; i++) { const px = L(700) + i * 44; poly(mix('#28406b', '#121a2c', d * .6), [[px, y - 6], [px + 36, y - 6], [px + 30, y - 26], [px - 6, y - 26]]); line('rgba(255,255,255,.25)', 1, [[px + 15, y - 6], [px + 12, y - 26]]); line('#666', 2, [[px + 18, y], [px + 18, y - 6]]); }
+  }
+  function drawShaft(now) {
+    const y0 = lay.floorsTop - 34, y1 = lay.streetTop;
+    box('#2b2f37', SH.x0, y0, SH.x1 - SH.x0, y1 - y0);
+    for (let y = y0; y < y1; y += 22) box('rgba(255,255,255,.03)', SH.x0, y, SH.x1 - SH.x0, 11);
+    box('#4a505b', SH.x0 + 4, y0, 3, y1 - y0); box('#4a505b', SH.x1 - 7, y0, 3, y1 - y0);
+    const cb = carBottom(el.k), ct = cb - 100;
+    // cables + counterweight
+    line('#14161a', 1.5, [[SH.cx - 6, y0], [SH.cx - 6, ct]]); line('#14161a', 1.5, [[SH.cx + 6, y0], [SH.cx + 6, ct]]);
+    const cw = y0 + (y1 - cb) * .9 + 30;
+    line('#14161a', 1.5, [[SH.x0 + 12, y0], [SH.x0 + 12, cw]]); box('#5b616b', SH.x0 + 8, cw, 9, 34, 1);
+    // car
+    const x0 = SH.x0 + 9, w = SH.x1 - SH.x0 - 18;
+    box('#9aa3ad', x0 - 3, ct - 4, w + 6, 108, 4);
+    const g = ctx.createLinearGradient(0, ct, 0, cb); g.addColorStop(0, '#fff6dc'); g.addColorStop(1, '#e2d6b8');
+    ctx.fillStyle = g; ctx.fillRect(x0, ct, w, 100);
+    box('#cdbb93', x0, cb - 8, w, 8); line('#b9a57d', 2, [[x0 + 4, cb - 34], [x0 + w - 4, cb - 34]]);
+    box('#fffbe8', x0 + w / 2 - 12, ct + 3, 24, 3, 1);
+    box('#20242b', x0 + w / 2 - 10, ct - 14, 20, 9, 2);
+    txt('#ff6b4a', `700 7px ${UI}`, Math.round(el.k) === 0 ? 'L' : String(Math.round(el.k)), x0 + w / 2, ct - 7, 'center');
+    // riders
+    people.filter(p => p.inCar).forEach(p => drawPerson(p, p.x, cb - 2, .92, now));
+    // glass + gate
+    ctx.fillStyle = 'rgba(190,225,255,.10)'; ctx.fillRect(x0, ct, w, 100);
+    line('rgba(255,255,255,.35)', 2, [[x0 + 8, ct + 10], [x0 + 22, ct + 40]]);
+    const gate = 1 - el.doors;
+    for (let i = 0; i < 4; i++) box('#7d8691', x0 + w - 2 - i * 3.5 * gate, ct + 2, 2, 96 * Math.max(.05, gate) + 2);
   }
 
-  function drawRoom(ctx, r, T, fs) {
-    const s = sessions.get(r.sid) || {};
-    ctx.fillStyle = T.floor; rr(ctx, 0, 0, RW, RH, 14); ctx.fill();
-    ctx.save(); rr(ctx, 0, 0, RW, RH, 14); ctx.clip();
-    ctx.strokeStyle = T.tile; ctx.lineWidth = 1;
-    for (let x = 40; x < RW; x += 40) { ctx.beginPath(); ctx.moveTo(x, 54); ctx.lineTo(x, RH); ctx.stroke(); }
-    for (let y = 94; y < RH; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(RW, y); ctx.stroke(); }
-    ctx.fillStyle = T.wall; ctx.fillRect(0, 0, RW, 54);
-    ctx.fillStyle = T.rug; ctx.beginPath(); ctx.ellipse(BOSS.x, BOSS.y + 16, 90, 30, 0, 0, 7); ctx.fill();
-    // window + plant
-    ctx.fillStyle = T.window; rr(ctx, 400, 12, 110, 32, 4); ctx.fill();
-    ctx.fillStyle = '#7a5a3a'; rr(ctx, RW - 34, RH - 40, 18, 18, 3); ctx.fill();
-    ctx.fillStyle = '#4f9a5a'; [[-6, -48], [4, -52], [-1, -58], [8, -44]].forEach(([dx, dy]) => { ctx.beginPath(); ctx.ellipse(RW - 25 + dx, RH + dy, 7, 11, dx / 10, 0, 7); ctx.fill(); });
-    // door
-    ctx.fillStyle = T.door; rr(ctx, 0, DOOR.y - 58, 14, 62, 2); ctx.fill();
-    ctx.fillStyle = '#e2c26b'; ctx.beginPath(); ctx.arc(10, DOOR.y - 26, 2, 0, 7); ctx.fill();
+  // ---- people ----
+  function drawPerson(p, X, Y, s, now) {
+    const S = p.S, sit = p.seated && !p.inCar, f = sit ? 0 : p.facing;
+    const talking = p.bubble && p.bubble.talk && Math.sin(now / 80) > -.2;
+    const closed = p.blinkT > 0;
+    ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, p.alpha)); ctx.translate(X, Y); ctx.scale(s, s);
+    if (!sit) oval('rgba(0,0,0,.2)', 0, 0, 13, 3.5);
+    ctx.translate(0, sit ? 6 : (p.walking ? -Math.abs(Math.sin(p.phase)) * 2 : 0));
+    if (f === 1 || f === -1) { ctx.scale(f, 1); side(p, S, talking, closed, now); }
+    else front(p, S, talking, closed, sit, f === 2, now);
     ctx.restore();
-    // title
-    ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
-    ctx.font = `650 ${15 * fs}px system-ui, sans-serif`; ctx.fillStyle = T.text;
-    const title = base(s.cwd) || 'Claude session'; ctx.fillText(title, 16, 24 * Math.min(fs, 1.15) + 6);
-    const st = s.status === 'working' && Date.now() - s.last > 6e5 ? 'quiet' : s.status;
-    const label = { working: 'Working', waiting: 'Needs you', idle: 'Idle', ended: 'Ended', quiet: 'Quiet' }[st] || '';
-    const tw = ctx.measureText(title).width; ctx.font = `600 ${11 * fs}px system-ui, sans-serif`;
-    const pw = ctx.measureText(label).width + 14, px = 26 + tw, py = 13;
-    ctx.strokeStyle = ctx.fillStyle = { working: T.work, waiting: T.wait }[st] || T.muted;
-    rr(ctx, px, py, pw, 17 * Math.min(fs, 1.15), 9); ctx.stroke(); ctx.fillText(label, px + 7, py + 12.5 * Math.min(fs, 1.15));
-    // desks + people, back to front
-    const drawn = [];
-    SLOTS.forEach((d, i) => { const k = r.slots[i]; const o = k && r.people.get(k); drawn.push({ y: d.y, f: () => drawDesk(ctx, d, o && o.seated && o.sticky, T) }); });
-    drawn.push({ y: BOSS.y, f: () => drawDesk(ctx, BOSS, r.boss.seated && r.boss.sticky, T) });
-    for (const c of r.people.values()) { c._boss = r.boss; drawn.push({ y: c.y, f: () => drawPerson(ctx, c, T, fs) }); }
-    drawn.sort((a, b) => a.y - b.y).forEach(o => o.f());
-    for (const c of r.people.values()) drawName(ctx, c, T, fs);
-    for (const c of r.people.values()) drawBubble(ctx, c, T, fs);
-    if (r.ended) { ctx.fillStyle = T.dim; rr(ctx, 0, 0, RW, RH, 14); ctx.fill(); }
+    if (!p.inCar) hits.push({ x0: X - 15 * s, x1: X + 15 * s, y0: Y - 84 * s, y1: Y, p });
+  }
+  function hairFront(S) {
+    const c = S.hair;
+    switch (S.hs) {
+      case 1: box(c, -12.5, -80, 25, 32, 9); oval(c, 0, -74, 11.8, 9.5, PI * .95, PI * 2.05); break;
+      case 2: oval(c, 0, -74, 11.6, 9.2, PI * .95, PI * 2.05); oval(c, 0, -85, 5.5, 5); break;
+      case 3: for (let a = -3.3; a <= .2; a += .45) oval(c, Math.cos(a) * 10, -72 + Math.sin(a) * 9.5, 4.8, 4.8); break;
+      case 4: oval(c, 0, -74, 11.4, 8.5, PI, PI * 2); for (let i = -2; i <= 2; i++) poly(c, [[i * 4.5 - 3.5, -78], [i * 4.5, -88 + Math.abs(i)], [i * 4.5 + 3.5, -78]]); break;
+      case 5: oval(c, -10.5, -71, 2.2, 4); oval(c, 10.5, -71, 2.2, 4); break;
+      default: oval(c, 0, -74, 11.6, 9.4, PI * .95, PI * 2.05); oval(c, -4, -77.5, 8, 3.5); box(c, -11.5, -75, 3, 7, 1.5); box(c, 8.5, -75, 3, 7, 1.5);
+    }
+  }
+  function front(p, S, talking, closed, sit, backView, now) {
+    const top = S.blazer || S.shirt;
+    if (!sit) {
+      const st = p.walking ? Math.sin(p.phase) * 2.5 : 0;
+      box(S.pants, -8, -31, 7, 27 + st, 2); box(S.pants, 1, -31, 7, 27 - st, 2);
+      oval(S.shoe, -4.5, -3 + st, 5, 3); oval(S.shoe, 4.5, -3 - st, 5, 3);
+    }
+    if (S.hs === 1 && !backView) box(S.hair, -12.5, -80, 25, 32, 9);
+    // arms behind torso when hanging
+    const typing = sit && p.sticky && p.role !== 'npc' && !p.holding;
+    const sw = p.walking ? Math.sin(p.phase) * 2 : 0;
+    if (!typing && p.holding !== 'phone' && !(backView && p.holding === 'marker')) {
+      box(top, -15.5, -54 + sw, 5.5, 22, 2.5); oval(S.skin, -12.8, -31 + sw, 2.8, 2.8);
+    }
+    if (!typing && !p.holding) { box(top, 10, -54 - sw, 5.5, 22, 2.5); oval(S.skin, 12.8, -31 - sw, 2.8, 2.8); }
+    // torso
+    box(top, -11, -57, 22, 31, 7);
+    box('rgba(0,0,0,.08)', 3, -57, 8, 31, 5);
+    if (backView) {
+      if (S.hoodie) oval(shade(S.shirt, -.15), 0, -55, 9, 5);
+    } else if (S.blazer) {
+      poly(S.shirt, [[-4.5, -57], [4.5, -57], [0, -43]]);
+      poly(S.tie, [[0, -54], [-2.2, -50], [0, -39], [2.2, -50]]);
+      line(shade(S.blazer, -.25), 1, [[-4.5, -57], [-1, -45]]); line(shade(S.blazer, -.25), 1, [[4.5, -57], [1, -45]]);
+      oval('#e8c35a', -6.5, -48, 1.3, 1.3);
+    } else if (S.hoodie) {
+      oval(shade(S.shirt, -.15), 0, -56, 8, 3.5);
+      line('#e8e8e8', 1, [[-2.5, -55], [-3, -47]]); line('#e8e8e8', 1, [[2.5, -55], [3, -47]]);
+      box(shade(S.shirt, -.12), -7, -38, 14, 7, 2);
+    } else {
+      poly('#f4f1ea', [[-5, -57], [0, -53], [-2, -50]]); poly('#f4f1ea', [[5, -57], [0, -53], [2, -50]]);
+      if (p.role === 'worker') { line(S.lanyard, 1.3, [[-4, -56], [0, -46], [4, -56]]); box('#ffffff', -3.5, -47, 7, 9, 1); box(S.lanyard, -3.5, -47, 7, 2.5, 1); }
+      if (p.role === 'npc') { oval('#f2d16b', 0, -52, 2, 2); }
+    }
+    // front arms (typing / holding)
+    if (typing) {
+      const a = Math.sin(now / 70) * 1.6, b = Math.cos(now / 65) * 1.6;
+      line(top, 5, [[-10, -53], [-14, -42], [-7, -37 + a]]); line(top, 5, [[10, -53], [14, -42], [7, -37 + b]]);
+      oval(S.skin, -6, -36.5 + a, 2.8, 2.4); oval(S.skin, 6, -36.5 + b, 2.8, 2.4);
+    } else if (p.holding === 'phone') {
+      box(top, -15.5, -54, 5.5, 22, 2.5); oval(S.skin, -12.8, -31, 2.8, 2.8);
+      line(top, 5, [[10, -53], [15, -60], [10, -67]]); oval(S.skin, 9.5, -67, 2.8, 2.8);
+      box('#2b2f38', 7.5, -74, 4.5, 13, 2);
+    } else if (p.holding === 'mug') {
+      line(top, 5, [[10, -53], [14, -42], [7, -42]]); oval(S.skin, 6.5, -42, 2.8, 2.8);
+      box('#f4f1ea', 3, -49, 8, 9, 1.5); box('#c96442', 3, -46, 8, 2); ctx.strokeStyle = '#f4f1ea'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(11.5, -44.5, 2.5, -PI / 2, PI / 2); ctx.stroke();
+    } else if (p.holding === 'marker' && backView) {
+      const w = Math.sin(now / 110) * 4;
+      box(top, -15.5, -54, 5.5, 22, 2.5); oval(S.skin, -12.8, -31, 2.8, 2.8);
+      line(top, 5, [[10, -53], [17, -66], [14 + w, -80]]); oval(S.skin, 14 + w, -81, 2.8, 2.8);
+      box('#2350a0', 13 + w, -88, 2.5, 6, 1);
+    }
+    box(S.skin, -3, -61, 6, 5);
+    if (backView) {
+      oval(S.skin, -10.8, -70, 2.5, 3.2); oval(S.skin, 10.8, -70, 2.5, 3.2);
+      oval(S.hs === 5 ? S.skin : S.hair, 0, -71, 11.2, 12.5);
+      if (S.hs === 1) box(S.hair, -12.5, -76, 25, 28, 9);
+      if (S.hs === 2) oval(S.hair, 0, -85, 5.5, 5);
+      if (S.hs === 3) for (let a = -3.3; a <= .2; a += .45) oval(S.hair, Math.cos(a) * 10, -72 + Math.sin(a) * 9.5, 4.8, 4.8);
+      return;
+    }
+    oval(shade(S.skin, -.08), -10.6, -69.5, 2.5, 3.2); oval(shade(S.skin, -.08), 10.6, -69.5, 2.5, 3.2);
+    oval(S.skin, 0, -70, 10.5, 12);
+    if (S.hs === 5) { oval(S.hair, 0, -63, 9.5, 7.5, 0, PI); box(S.hair, -9.5, -66, 19, 3); }
+    hairFront(S);
+    oval('rgba(255,110,110,.22)', -6, -65.5, 2.3, 1.6); oval('rgba(255,110,110,.22)', 6, -65.5, 2.3, 1.6);
+    const lx = p.lookX || 0, worried = p.role === 'lead' && p.owner && p.owner.waiting;
+    if (closed) { line('#2a2522', 1.2, [[-5.3 + lx, -70], [-2.3 + lx, -70]]); line('#2a2522', 1.2, [[2.3 + lx, -70], [5.3 + lx, -70]]); }
+    else { oval('#2a2522', -3.8 + lx, -70, 1.5, 2); oval('#2a2522', 3.8 + lx, -70, 1.5, 2); oval('#fff', -3.4 + lx, -70.7, .5, .5); oval('#fff', 4.2 + lx, -70.7, .5, .5); }
+    const bc = shade(S.hs === 5 ? '#5a4632' : S.hair, -.2);
+    line(bc, 1.1, worried ? [[-6, -74], [-2, -75.5]] : [[-6, -74.8], [-2, -75]]); line(bc, 1.1, worried ? [[2, -75.5], [6, -74]] : [[2, -75], [6, -74.8]]);
+    if (talking) oval('#7a3b2e', 0, -64.2, 2.4, 1.9);
+    else { ctx.strokeStyle = '#7a3b2e'; ctx.lineWidth = 1.1; ctx.beginPath(); worried ? ctx.arc(0, -62.5, 2.6, PI * 1.2, PI * 1.8) : ctx.arc(0, -66.2, 2.8, PI * .2, PI * .8); ctx.stroke(); }
+    if (S.glasses) { ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(-3.8, -70, 3.3, 0, PI * 2); ctx.moveTo(7.1, -70); ctx.arc(3.8, -70, 3.3, 0, PI * 2); ctx.moveTo(-.5, -70.5); ctx.lineTo(.5, -70.5); ctx.stroke(); }
+  }
+  function side(p, S, talking, closed, now) {
+    const a = p.walking ? Math.sin(p.phase) * .55 : 0, top = S.blazer || S.shirt;
+    const leg = (ang, c) => { ctx.save(); ctx.translate(0, -30); ctx.rotate(ang); box(c, -3.5, 0, 7, 27, 3); oval(S.shoe, 2.5, 27, 6, 3); ctx.restore(); };
+    leg(-a, shade(S.pants, -.15)); leg(a, S.pants);
+    ctx.save(); ctx.translate(0, -53); ctx.rotate(-a * .8); box(shade(top, -.15), -2.5, 0, 5, 21, 2.5); oval(shade(S.skin, -.1), 0, 22, 2.6, 2.6); ctx.restore();
+    if (S.hs === 1) box(S.hair, -11, -77, 10, 27, 5);
+    box(top, -8, -57, 16, 31, 6);
+    if (S.blazer) box(S.tie, 5.5, -54, 2.5, 13, 1);
+    if (S.hoodie) oval(shade(S.shirt, -.15), -7, -54, 4, 6);
+    if (p.role === 'worker') box('#ffffff', 4.5, -47, 3.5, 6, 1);
+    if (p.holding === 'phone') { line(top, 5, [[0, -53], [6, -60], [6, -67]]); box('#2b2f38', 4, -74, 4.5, 12, 2); }
+    else if (p.holding === 'mug') { line(top, 5, [[0, -53], [4, -43], [10, -44]]); box('#f4f1ea', 9, -50, 7, 9, 1.5); box('#c96442', 9, -47, 7, 2); }
+    else { ctx.save(); ctx.translate(0, -53); ctx.rotate(a * .8); box(top, -2.5, 0, 5, 21, 2.5); oval(S.skin, 0, 22, 2.6, 2.6); ctx.restore(); }
+    box(S.skin, -2.5, -61, 5, 6);
+    oval(S.skin, 1, -70, 10, 11.5);
+    oval(S.skin, 10.5, -69, 2.3, 2.3);
+    oval(shade(S.skin, -.1), -1.5, -69, 2.4, 3);
+    const c = S.hair;
+    if (S.hs === 5) oval(c, 3.5, -63.5, 7, 5, 0, PI);
+    else if (S.hs === 3) for (let t = -3.4; t <= -.6; t += .45) oval(c, Math.cos(t) * 9.5, -72 + Math.sin(t) * 9, 4.6, 4.6);
+    else {
+      oval(c, 0, -73.5, 10.8, 9, PI * .85, PI * 2.02); box(c, -10.5, -74, 7, 11, 3);
+      if (S.hs === 2) oval(c, -9, -81, 4.8, 4.8);
+      if (S.hs === 4) for (let i = 0; i < 4; i++) poly(c, [[-8 + i * 5, -79], [-6 + i * 5, -88 + i], [-3 + i * 5, -79]]);
+    }
+    if (closed) line('#2a2522', 1.2, [[4, -70.5], [7, -70.5]]); else { oval('#2a2522', 5.6, -70.5, 1.4, 2); oval('#fff', 6, -71.2, .45, .45); }
+    line(shade(S.hs === 5 ? '#5a4632' : S.hair, -.2), 1.1, [[3.5, -74.8], [7.8, -75]]);
+    if (talking) oval('#7a3b2e', 7, -64.6, 1.8, 1.5); else line('#7a3b2e', 1.1, [[5, -65.2], [8.3, -65.6]]);
+    if (S.glasses) { ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(5.6, -70.5, 3.2, 0, PI * 2); ctx.moveTo(2.4, -71); ctx.lineTo(-1.5, -71); ctx.stroke(); }
   }
 
-  const canvas = document.getElementById('officeCanvas'), ctx = canvas.getContext('2d');
+  // ---- furniture ----
+  function monitor(mx, y, on, dir, now, seed) {
+    box('#3a3e46', mx - 1.5, y - 9, 3, 9); oval('#3a3e46', mx, y - .5, 7, 1.8);
+    ctx.save(); ctx.translate(mx, y - 9); ctx.transform(1, -.16 * dir, 0, 1, 0, 0);
+    box('#23262d', -13, -22, 26, 20, 2);
+    if (on) {
+      box('#141b29', -11, -20, 22, 16);
+      const cols = ['#7fd1ff', '#ffcf6b', '#c792ea', '#a5e075', '#ff8f80'], sh = Math.floor(now / 220 + seed);
+      for (let i = 0; i < 4; i++) { const n = (i * 37 + sh * 11 + seed) % 13; box(cols[(i + sh) % cols.length], -9 + (n % 3) * 2, -18 + i * 3.6, 5 + n, 1.6); }
+      if (Math.floor(now / 500) % 2) box('#e8e8e8', -9 + ((sh * 3) % 12), -18 + 3 * 3.6 + 2.6, 2.5, .8);
+    } else { box('#30343c', -11, -20, 22, 16); oval(`rgba(120,170,255,${.25 + .2 * Math.sin(now / 900 + seed)})`, 0, -12, 1.3, 1.3); }
+    ctx.restore();
+    if (on) { ctx.fillStyle = 'rgba(130,190,255,.10)'; ctx.beginPath(); ctx.ellipse(mx + dir * 10, y - 18, 22, 14, 0, 0, PI * 2); ctx.fill(); }
+  }
+  function prop(kind, x, y, now, on) {
+    switch (kind) {
+      case 'mug': box('#f4f1ea', x - 4, y - 9, 8, 9, 1.5); box('#4f86c6', x - 4, y - 6, 8, 2); ctx.strokeStyle = '#f4f1ea'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x + 4.5, y - 4.5, 2.5, -PI / 2, PI / 2); ctx.stroke();
+        if (on && Math.random() < .04) parts.push({ kind: 'steam', x: x, y: y - 11, vx: (Math.random() - .5) * 4, vy: -10, life: 1.6, max: 1.6 }); break;
+      case 'plant': box('#c46a3a', x - 5, y - 8, 10, 8, 1.5); [[-4, -16, -.5], [0, -19, 0], [4, -16, .5], [-2, -13, -.9], [3, -13, .9]].forEach(([dx, dy, r]) => { ctx.save(); ctx.translate(x + dx, y + dy); ctx.rotate(r); oval('#4f9a5a', 0, 0, 2.6, 6); ctx.restore(); }); break;
+      case 'duck': oval('#f7d23e', x, y - 4, 6, 4.5); oval('#f7d23e', x + 4, y - 10, 3.6, 3.6); poly('#f08a24', [[x + 7, y - 10.5], [x + 10.5, y - 9.5], [x + 7, y - 8.5]]); oval('#222', x + 5, y - 11, .7, .7); break;
+      case 'lamp': line('#4a4f58', 1.6, [[x, y], [x - 3, y - 14], [x + 4, y - 22]]); poly('#d9774f', [[x, y - 26], [x + 10, y - 21], [x + 5, y - 17]]);
+        if (on) { ctx.fillStyle = 'rgba(255,220,140,.18)'; ctx.beginPath(); ctx.moveTo(x + 6, y - 20); ctx.lineTo(x + 16, y); ctx.lineTo(x - 6, y); ctx.closePath(); ctx.fill(); } box('#3a3e46', x - 4, y - 2, 8, 2); break;
+      case 'papers': for (let i = 0; i < 4; i++) box(i % 2 ? '#f7f5ee' : '#ebe7dc', x - 7 + (i % 2), y - 2 - i * 1.6, 14, 1.8); box('#f2b134', x - 2, y - 9, 6, 2); break;
+      case 'photo': box('#6b4a2f', x - 5, y - 13, 10, 12, 1); box('#9fd0ea', x - 3.5, y - 11.5, 7, 9); oval('#4f9a5a', x, y - 4, 4, 2.5); oval('#f2d16b', x + 1.5, y - 9, 1.4, 1.4); break;
+    }
+  }
+  const WOOD = ['#c99e6d', '#a77d50', '#8a6440'];
+  function desk(x, Y, w, now, o) {
+    box('#5b4632', x - w / 2 + 3, Y - 29, 4, 29); box('#5b4632', x + w / 2 - 7, Y - 29, 4, 29);
+    box(WOOD[1], x - w / 2 + 2, Y - 29, w - 4, 18);
+    box(WOOD[2], x + w / 2 - 30, Y - 29, 26, 28, 2);
+    line('rgba(0,0,0,.25)', 1, [[x + w / 2 - 28, Y - 20], [x + w / 2 - 6, Y - 20]]); line('rgba(0,0,0,.25)', 1, [[x + w / 2 - 28, Y - 11], [x + w / 2 - 6, Y - 11]]);
+    box('#d9c9a8', x + w / 2 - 20, Y - 26, 6, 1.6, .8); box('#d9c9a8', x + w / 2 - 20, Y - 17, 6, 1.6, .8); box('#d9c9a8', x + w / 2 - 20, Y - 8, 6, 1.6, .8);
+    box(WOOD[0], x - w / 2, Y - 36, w, 7, 2); box(shade(WOOD[0], -.12), x - w / 2, Y - 30, w, 1.5);
+    if (o.card) {
+      const cw = w - 40, cx = x - w / 2 + 6; box('#fffdf6', cx, Y - 26, cw, 12, 1); box('#e85d75', cx + 2, Y - 27, 6, 3, 1);
+      ctx.font = `600 6.5px ${HAND}`; let c = o.card; while (c.length > 3 && ctx.measureText(c).width > cw - 6) c = c.slice(0, -2) + '…';
+      txt('#2b2b30', `600 6.5px ${HAND}`, c, cx + cw / 2, Y - 17.5, 'center');
+    }
+    if (o.lead) {
+      monitor(x - w / 2 + 22, Y - 36, o.on, 1, now, 3); monitor(x + w / 2 - 22, Y - 36, o.on, -1, now, 7);
+      box('#e3c27a', x - 22, Y - 24, 44, 10, 1.5); txt('#4a3a1e', `800 6.5px ${UI}`, 'LEAD AGENT', x, Y - 16.8, 'center');
+      // desk phone (rings while waiting)
+      const ring = o.ringing && Math.floor(now / 120) % 2;
+      box('#2b2f38', x + 30, Y - 41, 14, 5, 2);
+      if (!o.phoneOff) box('#2b2f38', x + 28 + (ring ? 1.5 : 0), Y - 46, 18, 4, 2);
+      if (o.ringing) { ctx.strokeStyle = '#f2b134'; ctx.lineWidth = 1.2; for (let i = 1; i <= 2; i++) { ctx.beginPath(); ctx.arc(x + 37, Y - 46, 6 + i * 4 + (now / 150 % 3), PI * 1.15, PI * 1.85); ctx.stroke(); } }
+      prop('mug', x - 32, Y - 36, now, o.on); prop('papers', x + 16, Y - 36, now);
+    } else {
+      monitor(x - w / 2 + 18, Y - 36, o.on, 1, now, o.seed || 0);
+      box('#d9dde3', x - 4, Y - 38.5, 22, 2.8, 1); box('#c3c8d0', x + 21, Y - 38, 4.5, 2.2, 1);
+      prop(o.prop, x + w / 2 - 14, Y - 36, now, o.on);
+    }
+  }
+  function chair(x, Y, empty) {
+    box('#3a3f4b', x - 12, Y - 60, 24, 30, 6); box('#4a5060', x - 9, Y - 57, 18, 22, 4);
+    if (empty) { box('#3a3f4b', x - 13, Y - 26, 26, 5, 2); box('#666b75', x - 1.5, Y - 21, 3, 14); line('#555a63', 2, [[x - 11, Y - 4], [x + 11, Y - 4]]); oval('#222', x - 11, Y - 2, 2, 2); oval('#222', x + 11, Y - 2, 2, 2); }
+  }
+
+  // ---- wall decorations ----
+  function windowView(x, y, w, h) {
+    const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, T.top); g.addColorStop(1, T.low);
+    ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+    const r = rng(Math.floor(x));
+    for (let i = 0; i < 5; i++) { const bw = 14 + r() * 18, bh = 18 + r() * 40, bx = x + r() * (w - bw); box(mix('#8796ad', '#1a2240', T.dark * .8), bx, y + h - bh, bw, bh); if (T.dark > .2) for (let j = 0; j < 4; j++) box('rgba(255,214,140,.7)', bx + 3 + r() * (bw - 6), y + h - bh + 4 + r() * (bh - 8), 2.5, 3); }
+    if (T.dark > .2) for (let i = 0; i < 6; i++) box(`rgba(255,255,255,${T.dark * .7})`, x + r() * w, y + r() * h * .5, 1.2, 1.2);
+  }
+  function clock(x, y, r) {
+    oval('#3a3e46', x, y, r + 2, r + 2); oval('#fbfaf6', x, y, r, r);
+    for (let i = 0; i < 12; i++) { const a = i / 12 * PI * 2; box('#3a3e46', x + Math.cos(a) * (r - 3) - .6, y + Math.sin(a) * (r - 3) - .6, 1.2, 1.2); }
+    const d = new Date(), h = (d.getHours() % 12 + d.getMinutes() / 60) / 12 * PI * 2 - PI / 2, m = d.getMinutes() / 60 * PI * 2 - PI / 2, s = d.getSeconds() / 60 * PI * 2 - PI / 2;
+    line('#2b2b30', 1.8, [[x, y], [x + Math.cos(h) * r * .5, y + Math.sin(h) * r * .5]]); line('#2b2b30', 1.2, [[x, y], [x + Math.cos(m) * r * .78, y + Math.sin(m) * r * .78]]);
+    line('#d9534f', .7, [[x, y], [x + Math.cos(s) * r * .82, y + Math.sin(s) * r * .82]]); oval('#2b2b30', x, y, 1.2, 1.2);
+  }
+  function bigPlant(x, y, s = 1) {
+    box('#b65f34', x - 11 * s, y - 22 * s, 22 * s, 22 * s, 3); box('#a0532c', x - 13 * s, y - 24 * s, 26 * s, 5 * s, 2);
+    const leaves = [[-.9, 34], [-.5, 42], [-.15, 48], [.2, 46], [.55, 40], [.95, 32], [-1.3, 26], [1.3, 26]];
+    leaves.forEach(([a, l], i) => { ctx.save(); ctx.translate(x, y - 22 * s); ctx.rotate(a + Math.sin(performance.now() / 1500 + i) * .03); oval(i % 2 ? '#3f8a4f' : '#4fa060', 0, -l * s / 2, 5 * s, l * s / 2); line('rgba(0,0,0,.15)', .8, [[0, 0], [0, -l * s]]); ctx.restore(); });
+  }
+  function wrapText(text, maxW, maxLines) {
+    const words = String(text).split(/\s+/), lines = []; let cur = '';
+    for (const w of words) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; if (lines.length === maxLines) break; } else cur = t; }
+    if (lines.length < maxLines && cur) lines.push(cur);
+    const full = lines.join(' ').length < String(text).trim().length;
+    return lines.map((l, i) => { let s = l; while (ctx.measureText(s).width > maxW && s.length > 1) s = s.slice(0, -1); return (i === lines.length - 1 && full) ? s.replace(/.{0,1}$/, '…') : s; });
+  }
+  function whiteboard(r, t) {
+    const x0 = BOARD.x0, x1 = BOARD.x1, y0 = t + 62, y1 = t + 168;
+    box('#9aa1aa', x0 - 4, y0 - 4, x1 - x0 + 8, y1 - y0 + 8, 3); box('#fdfdfb', x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = 'rgba(160,180,200,.08)'; ctx.fillRect(x0 + 120, y0, 40, y1 - y0);
+    box('#8b929c', x0 + 10, y1 + 3, x1 - x0 - 20, 4, 1); box('#2350a0', x0 + 24, y1 + 1, 10, 3, 1); box('#d9534f', x0 + 38, y1 + 1, 10, 3, 1); box('#f2f2f2', x0 + 140, y1, 16, 5, 1);
+    const b = r.board;
+    txt('#d9534f', `700 9px ${HAND}`, 'TODAY', x0 + 8, y0 + 13);
+    line('#d9534f', 1, [[x0 + 8, y0 + 16], [x0 + 44, y0 + 16]]);
+    if (b.prompt) {
+      ctx.font = `600 9.5px ${HAND}`;
+      wrapText(b.prompt.slice(0, b.shown), x1 - x0 - 16, 3).forEach((l, i) => txt('#2350a0', `600 9.5px ${HAND}`, l, x0 + 8, y0 + 30 + i * 12));
+    } else txt('#9aa1aa', `9px ${HAND}`, '(nothing yet)', x0 + 8, y0 + 30);
+    b.tasks.slice(-4).forEach((tk, i) => {
+      const y = y0 + 70 + i * 10;
+      ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = .8; ctx.strokeRect(x0 + 9, y - 6.5, 6, 6);
+      if (tk.done) line('#2f9e5b', 1.4, [[x0 + 9.5, y - 3.5], [x0 + 12, y - 1], [x0 + 16.5, y - 8]]);
+      ctx.font = `8px ${HAND}`; const s = clip(tk.name, 34);
+      txt(tk.done ? '#7a8088' : '#2b2b30', `8px ${HAND}`, s, x0 + 19, y);
+      if (tk.done) line('#7a8088', .8, [[x0 + 19, y - 3], [x0 + 19 + ctx.measureText(s).width, y - 3]]);
+    });
+    if (!b.tasks.length && b.prompt) txt('#9aa1aa', `8px ${HAND}`, 'no helpers needed (yet)', x0 + 9, y0 + 80);
+  }
+  function bookshelf(x, y) {
+    box('#7a5636', x, y, 60, 140, 2); box('#5e4129', x + 3, y + 3, 54, 134);
+    const r = rng(7), cols = ['#c0504d', '#4f81bd', '#9bbb59', '#f2b134', '#8064a2', '#4bacc6', '#e46c0a', '#eeeeee'];
+    for (let s = 0; s < 4; s++) {
+      const sy = y + 34 + s * 34; box('#7a5636', x + 3, sy, 54, 4);
+      for (let bx = x + 5; bx < x + 52;) { const bw = 3 + r() * 5, bh = 18 + r() * 11; if (r() < .12) { box(cols[Math.floor(r() * 8)], bx, sy - 7, 14, 6, 1); bx += 16; continue; } box(cols[Math.floor(r() * 8)], bx, sy - bh, bw, bh, .8); bx += bw + .8; }
+    }
+    oval('#f2b134', x + 46, y + 22, 5, 5); box('#7a5636', x + 44, y + 27, 4, 7);
+  }
+  function lampFixture(x, t, lit) {
+    line('#5b616b', 1, [[x, t + 6], [x, t + 26]]);
+    poly('#3a3e46', [[x - 12, t + 34], [x - 6, t + 25], [x + 6, t + 25], [x + 12, t + 34]]);
+    oval(lit ? '#fff3c8' : '#8a8e96', x, t + 34, 7, 2);
+  }
+  function lightCone(x, t, strength) {
+    const g = ctx.createLinearGradient(0, t + 34, 0, t + 258);
+    g.addColorStop(0, `rgba(255,236,180,${.16 * strength})`); g.addColorStop(1, 'rgba(255,236,180,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(x - 10, t + 34); ctx.lineTo(x + 10, t + 34); ctx.lineTo(x + 70, t + 258); ctx.lineTo(x - 70, t + 258); ctx.closePath(); ctx.fill();
+  }
+  function slab(y, h) {
+    const c = mix('#8f8a83', '#3d3a36', T.dark * .4);
+    box(c, BX0, y, SH.x0 - BX0, h); box(c, SH.x1, y, BX1 - SH.x1 - 10, h);
+    box(shade(c, .15), BX0, y, SH.x0 - BX0, 1.5); box(shade(c, .15), SH.x1, y, BX1 - SH.x1 - 10, 1.5);
+  }
+  function floorIndicator(t, k) {
+    const x = IN0 + 4, y = t + 92;
+    box('#c7ccd3', x, y, 22, 36, 2); box('#1d2026', x + 3, y + 3, 16, 11, 1.5);
+    const cur = Math.round(el.k);
+    txt('#ff6b4a', `700 8px ${UI}`, cur === 0 ? 'L' : String(cur), x + 11, y + 11.5, 'center');
+    const called = el.jobs.some(j => kOf(j.from) === k) || (el.cur && kOf(el.cur.from) === k && /close0|go/.test(el.cur.ph));
+    oval(called ? '#ffcf6b' : '#8a9099', x + 11, y + 24, 4, 4); poly(called ? '#5a4500' : '#e8e8e8', [[x + 11, y + 21.5], [x + 13.5, y + 25.5], [x + 8.5, y + 25.5]]);
+  }
+
+  // ---- one office floor ----
+  function drawFloor(r, now) {
+    const t = top(r.k), P = r.pal, s = sessions.get(r.sid) || {}, lit = !r.ended, k = r.k;
+    slab(t, 6);
+    box(P.wall, IN0, t + 6, IN1 - IN0, 216);
+    ctx.fillStyle = 'rgba(0,0,0,.025)'; for (let x = IN0; x < IN1; x += 26) ctx.fillRect(x, t + 6, 13, 170);
+    box(P.wains, IN0, t + 176, IN1 - IN0, 46); box('rgba(255,255,255,.4)', IN0, t + 174, IN1 - IN0, 3);
+    for (let x = IN0 + 20; x < IN1; x += 44) box('rgba(0,0,0,.05)', x, t + 182, 30, 34, 2);
+    box('rgba(0,0,0,.14)', IN0, t + 216, IN1 - IN0, 6);
+    const fg = ctx.createLinearGradient(0, t + 222, 0, t + 258); fg.addColorStop(0, shade(P.floor, -.15)); fg.addColorStop(1, P.floor);
+    ctx.fillStyle = fg; ctx.fillRect(IN0, t + 222, IN1 - IN0, 36);
+    for (let i = 0; i < 4; i++) { const y = t + 222 + i * 9; box('rgba(0,0,0,.08)', IN0, y, IN1 - IN0, 1); for (let x = IN0 + (i % 2) * 40; x < IN1; x += 80) box('rgba(0,0,0,.06)', x, y, 1, 9); }
+    box(mix('#7d776f', '#3d3a36', T.dark * .4), BX0, t + 258, BW - 10, 12); box('rgba(255,255,255,.12)', BX0, t + 258, BW - 10, 1.5);
+    // sign with floor number and status light
+    const st = s.status === 'working' && Date.now() - (s.last || 0) > 6e5 ? 'quiet' : (s.status || 'idle');
+    const lampC = { working: '#4ade80', waiting: '#fbbf24', idle: '#9ca3af', ended: '#4b5563', quiet: '#9ca3af' }[st];
+    box('#2d3142', IN0 + 34, t + 42, 192, 28, 4); box('#3d4256', IN0 + 36, t + 44, 32, 24, 3);
+    txt('#ffffff', `800 14px ${UI}`, k + 'F', IN0 + 52, t + 61, 'center');
+    txt('#f4f1ea', `700 12px ${UI}`, clip(base(s.cwd) || 'Claude session', 16), IN0 + 76, t + 60);
+    const blinkOn = st !== 'waiting' || Math.floor(now / 400) % 2;
+    if (blinkOn && st !== 'ended') { const g = ctx.createRadialGradient(IN0 + 212, t + 56, 1, IN0 + 212, t + 56, 14); g.addColorStop(0, lampC); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(IN0 + 198, t + 42, 28, 28); }
+    oval(blinkOn ? lampC : '#3b3f4a', IN0 + 212, t + 56, 5, 5);
+    floorIndicator(t, k);
+    bookshelf(IN0 + 40, t + 78);
+    clock(L(352), t + 66, 13);
+    whiteboard(r, t);
+    // windows
+    for (let i = 0; i < 3; i++) {
+      const x = L(612) + i * 135, y = t + 26, w = 112, h = 92;
+      box('#f4f1ea', x - 5, y - 5, w + 10, h + 10, 2); windowView(x, y, w, h);
+      box('#f4f1ea', x + w / 2 - 2, y, 4, h); box('#f4f1ea', x, y + h / 2 - 2, w, 4);
+      for (let j = 0; j < 7; j++) box('rgba(235,230,215,.9)', x, y + j * 3.4, w, 2.4);
+      line('#cfc8b6', .8, [[x + w - 8, y + 24], [x + w - 8, y + 50]]);
+      box('#e9e2d0', x - 8, y + h + 4, w + 16, 5, 1);
+    }
+    // break corner: poster, counter, coffee machine, microwave, water cooler
+    box('#2b2f38', L(1018), t + 40, 60, 78, 2); box('#d9774f', L(1021), t + 43, 54, 72);
+    txt('#fff3e0', `900 12px ${UI}`, 'SHIP', L(1048), t + 66, 'center'); txt('#fff3e0', `900 12px ${UI}`, 'IT', L(1048), t + 80, 'center'); txt('#fff3e0', `16px ${UI}`, '🚀', L(1048), t + 104, 'center');
+    const cg = ground(k, 0);
+    box('#d6d0c4', L(1010), cg - 40, 74, 40, 2); box('#efeae0', L(1007), cg - 44, 80, 5, 2);
+    line('rgba(0,0,0,.2)', 1, [[L(1047), cg - 38], [L(1047), cg - 2]]); box('#a59f93', L(1040), cg - 24, 2, 7); box('#a59f93', L(1052), cg - 24, 2, 7);
+    const mx = L(1030);
+    box('#2f3238', mx - 13, cg - 80, 26, 36, 3); box('#45494f', mx - 10, cg - 76, 20, 9, 2);
+    oval(Math.floor(now / 600) % 2 || r.brewing ? '#ff5a4a' : '#7a2a24', mx + 7, cg - 71.5, 1.6, 1.6);
+    box('#1b1d21', mx - 4, cg - 64, 8, 4); box('#f4f1ea', mx - 4, cg - 52, 8, 8, 1.5);
+    if (r.brewing) { box('#5a3a22', mx - .6, cg - 60, 1.2, 8); if (Math.random() < .15) parts.push({ kind: 'steam', x: mx, y: cg - 56, vx: (Math.random() - .5) * 6, vy: -12, life: 1.4, max: 1.4 }); }
+    box('#e8e6e1', L(1056), cg - 66, 26, 20, 2); box('#2b2f38', L(1059), cg - 63, 15, 14, 1); box('#9aa1aa', L(1077), cg - 62, 3, 3);
+    const wx = L(1098), wg = ground(k, .08);
+    box('#e6e8eb', wx - 9, wg - 46, 18, 46, 2); box('#cfd3d9', wx - 9, wg - 46, 18, 4); box('#3a73b8', wx + 3, wg - 36, 4, 3); box('#d9534f', wx - 7, wg - 36, 4, 3);
+    box('rgba(120,190,240,.75)', wx - 8, wg - 74, 16, 28, 6); box('rgba(255,255,255,.35)', wx - 5, wg - 72, 3, 22, 2);
+    for (let i = 0; i < 3; i++) { const by = wg - 50 - ((now / 25 + i * 9) % 22); oval('rgba(255,255,255,.7)', wx - 2 + i * 2, by, 1.2, 1.2); }
+    // lamps (fixtures)
+    const lampsX = [L(255), L(480), L(700), L(840), L(980)];
+    lampsX.forEach(x => lampFixture(x, t, lit));
+
+    // dynamic objects sorted by depth
+    const items = [];
+    items.push({ y: ground(k, .02), f: () => bigPlant(L(345), ground(k, .02)) });
+    items.push({ y: ground(k, .03), f: () => bigPlant(L(598), ground(k, .03), .8) });
+    const leadOn = !!(r.lead.sticky && r.lead.seated);
+    items.push({ y: ground(k, LEAD.z) - .1, f: () => chair(LEAD.x, ground(k, LEAD.z), !(r.lead.seated && r.lead.loc === r)) });
+    items.push({ y: ground(k, LEAD.dz), f: () => desk(L(255), ground(k, LEAD.dz), 150, now, { lead: true, on: leadOn || r.waiting, ringing: r.waiting && r.lead.holding !== 'phone', phoneOff: r.lead.holding === 'phone' }) });
+    DESKS.forEach((d, i) => {
+      const key = r.desks[i], occ = key && people.find(p => p.owner === r && p.agentKey === key && !p.gone);
+      const seated = occ && occ.seated && occ.loc === r && Math.abs(occ.x - (d.x + 6)) < 2;
+      items.push({ y: ground(k, d.z - .13) - .1, f: () => chair(d.x + 6, ground(k, d.z - .13), !seated) });
+      items.push({ y: ground(k, d.z), f: () => desk(d.x, ground(k, d.z), 92, now, { on: seated && occ.sticky, prop: r.props[i], seed: i * 5, card: seated ? occ.name : '' }) });
+      if (seated && occ.sticky && Math.random() < .012) parts.push({ kind: 'glyph', x: d.x - 28, y: ground(k, d.z) - 70, vx: (Math.random() - .5) * 6, vy: -14, life: 1.8, max: 1.8, text: pick(['{ }', '</>', ';', '01', 'λ', '=>', '#']) });
+    });
+    people.filter(p => p.loc === r && !p.inCar).forEach(p => items.push({ y: ground(k, p.z), f: () => drawPerson(p, p.x, ground(k, p.z), .9 + p.z * .1, now) }));
+    items.sort((a, b) => a.y - b.y).forEach(o => o.f());
+    if (lit) lampsX.forEach(x => lightCone(x, t, .6 + T.dark * .8));
+    if (!lit) box('rgba(8,10,22,.6)', IN0, t + 6, IN1 - IN0, 252);
+    // idle zzz
+    if (r.idleSince && now - r.idleSince > 60000 && r.lead.seated && Math.random() < .02) parts.push({ kind: 'zzz', x: r.lead.x + 10, y: ground(k, r.lead.z) - 76, vx: 6, vy: -10, life: 2.2, max: 2.2 });
+  }
+
+  // ---- lobby ----
+  function drawLobby(now) {
+    const t = lay.lobbyTop, k = 0;
+    slab(t, 6);
+    box('#ece6da', IN0, t + 6, IN1 - IN0, 204);
+    for (let x = IN0; x < IN1; x += 70) { box('rgba(0,0,0,.035)', x, t + 6, 1.5, 204); box('rgba(255,255,255,.25)', x + 2, t + 6, 1, 204); }
+    box('#d8cfbf', IN0, t + 170, IN1 - IN0, 40); box('rgba(0,0,0,.12)', IN0, t + 204, IN1 - IN0, 6);
+    for (let y = t + 210, row = 0; y < t + 240; y += 10, row++) for (let x = IN0 + (row % 2) * 20, i = 0; x < IN1; x += 20, i++) box(i % 2 ? '#e9e4da' : '#bdb4a4', x, y, 20, 10);
+    box(mix('#7d776f', '#3d3a36', T.dark * .4), BX0, t + 240, BW - 10, 10);
+    floorIndicator(t, 0);
+    // staff door
+    box('#7a5636', STAFF_DOOR - 26, t + 110, 52, 100, 2); box('#8f6a45', STAFF_DOOR - 22, t + 114, 44, 96);
+    oval('#e3c27a', STAFF_DOOR + 15, t + 162, 2.2, 2.2); box('#2d3142', STAFF_DOOR - 20, t + 92, 40, 14, 2); txt('#f4f1ea', `800 7px ${UI}`, 'AGENTS', STAFF_DOOR, t + 102, 'center');
+    // directory board
+    const dx = L(250), dy = t + 64, list = [...rooms.values()].sort((a, b) => b.k - a.k);
+    box('#2d3142', dx, dy, 120, 110, 4); box('#3d4256', dx + 4, dy + 4, 112, 102, 3);
+    txt('#e3c27a', `800 8px ${UI}`, 'DIRECTORY', dx + 60, dy + 16, 'center');
+    list.slice(0, 7).forEach((r, i) => {
+      const s = sessions.get(r.sid) || {}, c = { working: '#4ade80', waiting: '#fbbf24', ended: '#4b5563' }[s.status] || '#9ca3af';
+      txt('#ffffff', `700 8px ${UI}`, r.k + 'F', dx + 10, dy + 32 + i * 11); txt('#d7dae2', `8px ${UI}`, clip(base(s.cwd) || 'session', 15), dx + 28, dy + 32 + i * 11);
+      oval(c, dx + 108, dy + 29 + i * 11, 3, 3);
+    });
+    if (!list.length) txt('#9aa1aa', `8px ${UI}`, 'No one in yet', dx + 60, dy + 40, 'center');
+    txt('#9aa1aa', `8px ${UI}`, 'L  Lobby', dx + 10, dy + 100);
+    // logo wall
+    ctx.save(); ctx.translate(RECEPTION - 70, t + 62); ctx.strokeStyle = '#d9774f'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    for (let i = 0; i < 8; i++) { ctx.rotate(PI / 4); ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(0, 16); ctx.stroke(); }
+    ctx.restore();
+    txt('#3d3a36', `800 26px ${UI}`, 'CLAUDE HQ', RECEPTION + 14, t + 72, 'center');
+    txt('#8a8478', `600 9px ${UI}`, 'AGENTS AT WORK SINCE TODAY', RECEPTION + 14, t + 88, 'center');
+    clock(L(780), t + 70, 15);
+    // bench, plants, frames
+    box('#6b4a2f', L(420) - 40, ground(0, 0) - 20, 80, 6, 2); box('#4a3220', L(420) - 36, ground(0, 0) - 14, 4, 14); box('#4a3220', L(420) + 32, ground(0, 0) - 14, 4, 14);
+    [[L(850), '#4f86c6'], [L(905), '#9bbb59'], [L(960), '#e46c0a']].forEach(([x, c]) => { box('#3a3e46', x - 20, t + 50, 40, 52, 2); box(c, x - 16, t + 54, 32, 44); oval('rgba(255,255,255,.35)', x - 4, t + 70, 9, 9); });
+    const items = [];
+    items.push({ y: ground(0, .02), f: () => bigPlant(L(340), ground(0, .02), 1.1) });
+    items.push({ y: ground(0, .04), f: () => bigPlant(L(1010), ground(0, .04), 1.2) });
+    items.push({ y: ground(0, .36) - .1, f: () => chair(RECEPTION, ground(0, .36), false) });
+    items.push({ y: ground(0, .55), f: () => {
+      const y = ground(0, .55);
+      box('#5e4129', RECEPTION - 92, y - 40, 184, 40, 6); box('#7a5636', RECEPTION - 88, y - 36, 176, 32, 4);
+      box('#e8e2d0', RECEPTION - 96, y - 46, 192, 8, 3);
+      txt('#e3c27a', `800 9px ${UI}`, 'RECEPTION', RECEPTION, y - 16, 'center');
+      monitor(RECEPTION - 60, y - 46, true, 1, now, 9); oval('#d9c36a', RECEPTION + 50, y - 49, 5, 3); box('#b39b4a', RECEPTION + 49, y - 54, 2, 4);
+      prop('plant', RECEPTION + 74, y - 46, now);
+    } });
+    people.filter(p => p.loc === LOBBY && !p.inCar).forEach(p => items.push({ y: ground(0, p.z), f: () => drawPerson(p, p.x, ground(0, p.z), .9 + p.z * .1, now) }));
+    items.sort((a, b) => a.y - b.y).forEach(o => o.f());
+    [L(300), L(600), L(900)].forEach(x => { lampFixture(x, t, true); lightCone(x, t, .5 + T.dark * .6); });
+    if (!rooms.size) reception.sticky = { icon: '👀', text: 'Waiting for someone to start claude…' };
+    else if (reception.sticky && reception.sticky.icon === '👀') reception.sticky = null;
+  }
+
+  // ---- speech bubbles, status chips, particles ----
+  function talkBubble(x, y, text) {
+    ctx.font = `600 ${11 * fs}px ${UI}`;
+    const lines = wrapText(text, 170 * fs, 3), lh = 13.5 * fs;
+    const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 18, h = lines.length * lh + 11;
+    const bx = Math.min(Math.max(x - w / 2, BX0 + 4), BX1 - w - 4), by = y - h - 9;
+    box('rgba(0,0,0,.18)', bx + 2, by + 3, w, h, 10);
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.roundRect(bx, by, w, h, 10); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 5, by + h - .7); ctx.lineTo(x - 1, by + h + 8); ctx.lineTo(x + 6, by + h - .7); ctx.fill();
+    line('#2b2b30', 1.3, [[x - 5, by + h], [x - 1, by + h + 8], [x + 6, by + h]]);
+    lines.forEach((l, i) => txt('#1f1e1c', `600 ${11 * fs}px ${UI}`, l, bx + 9, by + 6 + i * lh, 'left', 'top'));
+  }
+  function chip(x, y, text) {
+    ctx.font = `${9.5 * fs}px ${UI}`;
+    const s = clip(text, 46), w = ctx.measureText(s).width + 14, h = 15 * fs;
+    const bx = Math.min(Math.max(x - w / 2, BX0 + 4), BX1 - w - 4), by = y - h - 9;
+    box('rgba(28,31,40,.82)', bx, by, w, h, h / 2);
+    oval('rgba(28,31,40,.82)', x, by + h + 3, 2.4, 2.4); oval('rgba(28,31,40,.82)', x + 2, by + h + 7.5, 1.4, 1.4);
+    txt('#f4f6fa', `${9.5 * fs}px ${UI}`, s, bx + 7, by + h / 2 + .5, 'left', 'middle');
+  }
+  function drawBubbles(now) {
+    for (const p of people) {
+      if (p.alpha < .5) continue;
+      const k = kOf(p.loc), s = .9 + p.z * .1, Y = p.inCar ? carBottom(el.k) - 2 : ground(k, p.z);
+      const headTop = Y - (p.seated && !p.inCar ? 80 : 90) * s;
+      if (p.bubble) talkBubble(p.x, headTop, p.bubble.text);
+      else if (p.sticky && !p.inCar && (p.seated || p.role === 'lead')) chip(p.x, headTop, p.sticky.icon + ' ' + p.sticky.text);
+      if (p.role === 'lead' && p.owner && p.owner.waiting) {
+        const bx = p.x + 20, by = headTop - 8 + Math.sin(now / 140) * 3;
+        oval('#fbbf24', bx, by, 8, 8); txt('#3a2a00', `900 12px ${UI}`, '!', bx, by + 4.5, 'center');
+      }
+    }
+  }
+  function stepParts(dt) {
+    for (const q of parts) {
+      q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt;
+      if (q.kind === 'conf') { q.vy += 260 * dt; q.rot += dt * 8; }
+      else q.vx = Math.sin(q.life * 3) * 5;
+    }
+    parts = parts.filter(q => q.life > 0);
+    if (parts.length > 400) parts = parts.slice(-400);
+  }
+  function drawParts() {
+    for (const q of parts) {
+      const a = Math.max(0, q.life / q.max); ctx.globalAlpha = a;
+      if (q.kind === 'conf') { ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.rot); box(q.color, -2.5, -1.5, 5, 3); ctx.restore(); }
+      else if (q.kind === 'steam') oval('rgba(255,255,255,.65)', q.x, q.y, 1.5 + (1 - a) * 4, 1.5 + (1 - a) * 4);
+      else if (q.kind === 'glyph') txt('#4f86c6', `700 8px ui-monospace, Consolas, monospace`, q.text, q.x, q.y, 'center');
+      else if (q.kind === 'zzz') txt('#6c7a89', `800 ${8 + (1 - a) * 9}px ${UI}`, 'z', q.x, q.y, 'center');
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- main loop ----
   let prev = performance.now();
   function frame(now) {
     const dt = Math.min(.05, (now - prev) / 1000); prev = now;
-    for (const r of rooms.values()) {
-      for (const [k, c] of r.people) { step(c, dt, now); if (c.gone) { r.people.delete(k); if (c === r.you) r.you = null; } }
-      if (r.ended && Date.now() - (sessions.get(r.sid)?.last || 0) > 6e5) rooms.delete(r.sid);
-    }
-    if (!canvas.offsetParent) return requestAnimationFrame(frame);
     const list = [...rooms.values()].sort((a, b) => a.order - b.order);
-    const W = canvas.parentElement.clientWidth, cols = W >= 760 ? 2 : 1, gap = 16;
-    const colW = (W - gap * (cols - 1)) / cols, sc = Math.min(colW / RW, 1.35), fs = Math.max(1, .8 / sc);
-    const rowsN = Math.ceil(list.length / cols), H = rowsN * (RH * sc + gap);
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
-      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = H + 'px';
+    list.forEach((r, i) => { r.k = i + 1; });
+    lay.N = list.length; lay.floorsTop = SKY_H + 34; lay.lobbyTop = lay.floorsTop + lay.N * FH;
+    lay.streetTop = lay.lobbyTop + LOBBY_H; lay.H = lay.streetTop + STREET_H;
+    sky();
+    for (const p of people) stepP(p, dt, now);
+    stepEl(dt);
+    people = people.filter(p => !p.gone);
+    clouds.forEach(c => { c.x += c.v * dt; if (c.x > WW + 90) c.x = -90; });
+    stepParts(dt);
+    for (const r of list) if (r.ended && Date.now() - r.endedAt > 6e5) { rooms.delete(r.sid); people = people.filter(p => p.owner !== r); }
+    if (!canvas.offsetParent) { requestAnimationFrame(frame); return; }
+
+    const W = wrapEl.clientWidth;
+    sc = Math.min(1.25, Math.max(W / WW, W < 700 ? .52 : 0));
+    fs = Math.min(1.7, Math.max(1, .72 / sc));
+    const cssW = Math.round(WW * sc), cssH = Math.round(lay.H * sc), dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+      canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
     }
-    const T = { text: css('--text'), muted: css('--muted'), work: css('--work'), wait: css('--wait'),
-      floor: css('--floor'), tile: css('--tile'), wall: css('--wall'), rug: css('--rug'), window: css('--window'),
-      door: css('--door'), desk: css('--desk'), deskEdge: css('--desk-edge'), screenOn: css('--screen-on'),
-      bubble: css('--bubble'), bubbleText: css('--bubble-text'), bubbleLine: css('--line'), thought: css('--panel'), dim: css('--dim') };
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
-    list.forEach((r, i) => {
-      const cx = (i % cols) * (colW + gap) + (colW - RW * sc) / 2, cy = Math.floor(i / cols) * (RH * sc + gap);
-      ctx.setTransform(dpr * sc, 0, 0, dpr * sc, dpr * cx, dpr * cy);
-      drawRoom(ctx, r, T, fs);
-    });
+    ctx.setTransform(dpr * sc, 0, 0, dpr * sc, 0, 0);
+    hits = [];
+    drawSky(now); drawCity();
+    tree(58, lay.streetTop, 1); tree(WW - 60, lay.streetTop, 1.1);
+    lamp(112, lay.streetTop, -1); lamp(WW - 112, lay.streetTop, 1);
+    drawStreet(now, dt);
+    if (T.dark > 0) box(`rgba(6,10,30,${T.dark * .22})`, 0, 0, WW, lay.H);
+    drawShell(now); drawRoof(now); drawShaft(now);
+    drawLobby(now);
+    list.forEach(r => drawFloor(r, now));
+    drawParts(); drawBubbles(now);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  // ---- hover details ----
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect(), x = (e.clientX - rect.left) / sc, y = (e.clientY - rect.top) / sc;
+    const h = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+    if (!h) { tip.hidden = true; canvas.style.cursor = ''; return; }
+    const p = h.p, ses = p.owner && sessions.get(p.owner.sid);
+    const a = p.role === 'lead' ? ses && ses.agents.get('main') : p.agent;
+    const title = p.role === 'lead' ? (base(ses && ses.cwd) || 'Session') + ' · lead agent' : p.name;
+    const role = { lead: 'Runs this floor and hands out tasks', worker: (a && a.type ? a.type : 'helper') + ' agent', you: 'That’s you!', npc: 'Front desk' }[p.role];
+    const doing = p.bubble ? '“' + p.bubble.text + '”' : p.sticky ? p.sticky.icon + ' ' + p.sticky.text : p.role === 'npc' ? 'Greeting visitors' : 'Walking around';
+    tip.innerHTML = `<b>${esc(title)}</b><span>${esc(role)}</span><span>${esc(doing)}</span>` + (a ? `<span>${a.tools} tool use${a.tools === 1 ? '' : 's'}</span>` : '');
+    const wr = wrapEl.getBoundingClientRect();
+    tip.style.left = Math.min(e.clientX - wr.left + wrapEl.scrollLeft + 14, wrapEl.scrollWidth - 250) + 'px';
+    tip.style.top = (e.clientY - wr.top + 14) + 'px';
+    tip.hidden = false; canvas.style.cursor = 'help';
+  });
+  canvas.addEventListener('mouseleave', () => { tip.hidden = true; });
+
   return api;
 })();
 
@@ -549,7 +1276,7 @@ function setView(v) {
   syncView();
 }
 function syncView() {
-  const showOffice = view === 'office' && sessions.size > 0;
+  const showOffice = view === 'office';
   document.getElementById('office').hidden = !showOffice;
   document.getElementById('sessions').hidden = showOffice;
 }
