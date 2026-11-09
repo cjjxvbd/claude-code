@@ -9,12 +9,18 @@
     --bg: #f6f5f1; --panel: #ffffff; --line: #e4e1d8; --text: #1f1e1c; --muted: #6f6c64;
     --accent: #c96442; --work: #2f7d4f; --wait: #b7791f; --idle: #8a877f; --err: #b3392f;
     --chip: #f1efe8;
+    --floor: #efe6d6; --tile: rgba(120,90,50,.08); --wall: #e3d6c1; --rug: #e6c9b4; --window: #bfe0f0;
+    --door: #a77a52; --desk: #c99e6d; --desk-edge: #a67d50; --screen-on: #4f9fd8;
+    --bubble: #ffffff; --bubble-text: #1f1e1c; --dim: rgba(0,0,0,.25);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #1a1917; --panel: #232220; --line: #34322e; --text: #ecebe6; --muted: #9c998f;
       --accent: #e08a68; --work: #5cc489; --wait: #e0a845; --idle: #7d7a72; --err: #e66b5f;
       --chip: #2c2b28;
+      --floor: #2a2826; --tile: rgba(255,255,255,.035); --wall: #36332f; --rug: #3d322c; --window: #2d4656;
+      --door: #6e5038; --desk: #7b5b3e; --desk-edge: #5e4530; --screen-on: #3d8fcf;
+      --bubble: #f4f2ec; --bubble-text: #1f1e1c; --dim: rgba(0,0,0,.4);
     }
   }
   * { box-sizing: border-box; }
@@ -62,6 +68,11 @@
   .f:last-child { border-bottom: 0; }
   .f-time { color: var(--muted); font-size: 11.5px; margin-right: 6px; font-variant-numeric: tabular-nums; }
   .f-who { color: var(--accent); font-weight: 600; margin-right: 4px; }
+  .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .tabs button { border: 0; border-radius: 0; background: transparent; }
+  .tabs button.on { background: var(--chip); font-weight: 600; }
+  #office canvas { display: block; width: 100%; }
+  [hidden] { display: none !important; }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
   .empty code { background: var(--chip); padding: 2px 6px; border-radius: 4px; }
 </style>
@@ -72,10 +83,14 @@
   <span class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
   <span class="spacer"></span>
   <span class="conn" id="counts"></span>
+  <span class="tabs"><button id="viewOffice" class="on">Office</button><button id="viewList">List</button></span>
   <button id="clearBtn" title="Forget all events on the server">Clear</button>
 </header>
 <main>
-  <section id="sessions"></section>
+  <section>
+    <div id="office"><canvas id="officeCanvas"></canvas></div>
+    <div id="sessions" hidden></div>
+  </section>
   <aside class="panel feed"><h2>Live activity</h2><div id="feed"></div></aside>
 </main>
 
@@ -137,11 +152,14 @@ function agentFor(s, e) {
 function apply({ ts, e }) {
   const ev = e.hook_event_name, s = getSession(e), a = agentFor(s, e), main = s.agents.get('main');
   s.last = ts;
+  const live = Date.now() - ts < 8000;   // older events (page reload) skip the animations
+  const plain = () => { const [v, o] = describeTool(e.tool_name, e.tool_input); return v + (o ? ' ' + clip(o, 48) : ''); };
   let line = null;
   switch (ev) {
     case 'UserPromptSubmit':
       s.prompt = e.prompt || ''; s.status = 'working'; s.started = ts;
       main.status = 'working'; main.now = 'Thinking…';
+      office.prompt(s, e.prompt || '', live);
       line = 'You: ' + esc(clip(e.prompt, 160)); break;
     case 'PreToolUse':
       s.status = 'working'; a.status = 'working'; a.now = toolHtml(e.tool_name, e.tool_input);
@@ -150,27 +168,31 @@ function apply({ ts, e }) {
         s.agents.set(e.tool_use_id || ('t' + ts), { key: e.tool_use_id || ('t' + ts), name: i.description || 'Subagent',
           type: i.subagent_type || '', status: 'working', now: esc(clip(i.prompt, 160)), tools: 0, started: ts,
           background: !!i.run_in_background, parent: a.key });
-      }
+        office.spawn(s, s.agents.get(e.tool_use_id || ('t' + ts)), live);
+      } else office.tool(s, a, plain(), live);
       line = a.now; break;
     case 'PostToolUse':
       a.tools++; a.now = a.key === 'main' ? 'Thinking…' : 'Working…';
       if (isAgentTool(e.tool_name) && s.agents.has(e.tool_use_id)) {
         const sub = s.agents.get(e.tool_use_id);
-        if (!sub.background) { sub.status = 'done'; sub.now = 'Finished'; sub.ended = ts; }
+        if (!sub.background) { sub.status = 'done'; sub.now = 'Finished'; sub.ended = ts; office.done(s, sub, live); }
       }
       break;
     case 'Notification':
       s.status = 'waiting'; main.status = 'waiting'; main.now = esc(e.message || 'Waiting for you');
+      office.notify(s, e.message || 'I need your OK', live);
       line = '⚠ ' + esc(e.message || 'Needs your input'); break;
     case 'SubagentStop': {
-      if (a.key !== 'main') { a.status = 'done'; a.now = 'Finished'; a.ended = ts; }
+      if (a.key !== 'main') { a.status = 'done'; a.now = 'Finished'; a.ended = ts; office.done(s, a, live); }
       line = 'Agent finished: ' + esc(a.name); break; }
     case 'Stop':
       s.status = 'idle'; main.status = 'idle'; main.now = 'Done — waiting for your next message';
-      for (const x of s.agents.values()) if (x.key !== 'main' && x.status === 'working' && !x.background) { x.status = 'done'; x.now = 'Finished'; }
+      for (const x of s.agents.values()) if (x.key !== 'main' && x.status === 'working' && !x.background) { x.status = 'done'; x.now = 'Finished'; office.done(s, x, live); }
+      office.stop(s, live);
       line = 'Turn finished'; break;
     case 'SessionEnd':
       s.status = 'ended'; for (const x of s.agents.values()) { x.status = x.status === 'working' ? 'done' : x.status; }
+      office.end(s);
       line = 'Session ended'; break;
   }
   if (line) feed.push({ ts, who: a.key === 'main' ? base(s.cwd) || 'claude' : a.name, html: line });
@@ -213,6 +235,7 @@ function render() {
     ? feed.slice().reverse().map(f => `<div class="f"><span class="f-time">${time(f.ts)}</span><span class="f-who">${esc(f.who)}</span>${f.html}</div>`).join('')
     : '<div class="a-now">Waiting for events…</div>';
   dirty = false;
+  syncView();
 }
 
 function setConn(ok) {
@@ -230,10 +253,314 @@ async function poll() {
   setTimeout(poll, 1000);
 }
 
+// ---------------- Office view: little people who walk over and talk ----------------
+const office = (() => {
+  const RW = 560, RH = 330;                       // room size in room units
+  const DOOR = { x: 30, y: 205 };
+  const BOSS = { x: 290, y: 108 };
+  const SLOTS = [{ x: 110, y: 262 }, { x: 225, y: 262 }, { x: 340, y: 262 }, { x: 455, y: 262 }, { x: 470, y: 160 }, { x: 110, y: 120 }];
+  const seat = d => ({ x: d.x, y: d.y - 20 });
+  const SPOTS = [-38, 38, -110, 110, -180, 180];
+  const front = (d, r, c) => { let i = 0; if (r) { r.spots = r.spots || []; i = r.spots.indexOf(c.key); if (i < 0) { i = r.spots.indexOf(null); if (i < 0) i = r.spots.length; r.spots[i] = c.key; } } return { x: d.x + SPOTS[i % SPOTS.length], y: d.y + 44 }; };
+  const unspot = (r, c) => { if (r.spots) { const i = r.spots.indexOf(c.key); if (i >= 0) r.spots[i] = null; } };
+  const SHIRTS = ['#4c8bd6', '#3fa37a', '#9a6bd1', '#d0864a', '#d05c7a', '#3aa0a8', '#b59a2c'];
+  const HAIR = ['#2b2118', '#6b4423', '#c9a15b', '#a33b20', '#3d3d3d', '#e8e2d0'];
+  const SKIN = ['#f2cfb3', '#d9a57e', '#b97b52', '#8a5636', '#f5d9c4'];
+  const hash = str => { let h = 7; for (const c of String(str)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
+  const rooms = new Map();
+  let order = 0;
+
+  function person(key, name, x, y, shirt) {
+    const h = hash(key);
+    return { key, name, x, y, shirt: shirt || SHIRTS[h % SHIRTS.length], hair: HAIR[(h >> 3) % HAIR.length],
+      skin: SKIN[(h >> 6) % SKIN.length], queue: [], cur: null, bubble: null, sticky: '', seated: false,
+      walking: false, phase: Math.random() * 6, alpha: 0, facing: 1 };
+  }
+  const speak = (c, text, ms = 2500) => { c.bubble = { text, until: performance.now() + ms }; };
+  const walk = (to) => ({ t: 'walk', to });
+  const wait = ms => ({ t: 'wait', ms });
+  const run = fn => ({ t: 'do', fn });
+
+  function room(s) {
+    let r = rooms.get(s.id);
+    if (!r) {
+      const b = person('boss' + s.id, 'Lead agent', seat(BOSS).x, seat(BOSS).y, '#c96442');
+      b.seated = true; b.alpha = 1;
+      r = { sid: s.id, order: order++, people: new Map([['main', b]]), slots: [], boss: b, you: null, away: false };
+      rooms.set(s.id, r);
+    }
+    return r;
+  }
+  function freeSlot(r) { for (let i = 0; i < SLOTS.length; i++) if (!r.slots[i]) return i; return r.slots.length % SLOTS.length; }
+  function worker(r, a, instant) {
+    let w = r.people.get(a.key);
+    if (w) return w;
+    const i = freeSlot(r);
+    w = person(a.key, a.name, DOOR.x, DOOR.y); w.slot = i; r.slots[i] = a.key;
+    if (instant) { Object.assign(w, seat(SLOTS[i])); w.seated = true; w.alpha = 1; }
+    r.people.set(a.key, w);
+    return w;
+  }
+  function you(r) {
+    if (!r.you || r.you.leaving) {
+      r.you = person('you', 'You', DOOR.x - 6, DOOR.y, '#5b5b66');
+      r.you.hair = '#2b2118'; r.people.set('you' + Math.random(), r.you);
+    }
+    return r.you;
+  }
+  function leave(c) { c.leaving = true; c.queue.push(walk(() => DOOR), { t: 'fade' }); }
+  function bossHome(r, live) {
+    if (!r.away) return;
+    r.away = false;
+    if (live) r.boss.queue.push(walk(() => seat(BOSS)), { t: 'sit' });
+    else { r.boss.queue = []; r.boss.cur = null; Object.assign(r.boss, seat(BOSS)); r.boss.seated = true; }
+    if (r.you && !r.you.leaving) leave(r.you);
+  }
+
+  const api = {
+    prompt(s, text, live) {
+      const r = room(s); bossHome(r, live);
+      r.boss.sticky = 'Thinking…';
+      if (!live) return;
+      const y = you(r);
+      y.queue.push(walk(() => front(BOSS, r, y)), run(() => speak(y, clip(text, 90), 3200)), wait(3000),
+        run(() => speak(r.boss, 'On it!', 1600)), wait(900), run(() => unspot(r, y)));
+      leave(y);
+    },
+    tool(s, a, text, live) {
+      const r = room(s);
+      const c = a.key === 'main' ? r.boss : worker(r, a, !live);
+      if (c === r.boss) bossHome(r, live);
+      c.sticky = text;
+    },
+    spawn(s, sub, live) {
+      const r = room(s);
+      r.boss.sticky = 'Handing off a task…';
+      const w = worker(r, sub, !live);
+      w.sticky = 'Getting started…';
+      if (!live) return;
+      w.queue.push(walk(() => front(BOSS, r, w)),
+        run(() => speak(r.boss, 'Can you ' + clip(sub.name, 60).replace(/^./, m => m.toLowerCase()) + '?', 2600)), wait(2600),
+        run(() => speak(w, 'On it, boss!', 1500)), wait(900), run(() => unspot(r, w)), walk(() => seat(SLOTS[w.slot])), { t: 'sit' });
+    },
+    done(s, sub, live) {
+      const r = rooms.get(s.id); if (!r) return;
+      const w = r.people.get(sub.key); if (!w || w.leaving) return;
+      w.sticky = '';
+      if (!live) { r.people.delete(sub.key); r.slots[w.slot] = null; return; }
+      w.leaving = true;
+      w.queue.push(walk(() => front(BOSS, r, w)), run(() => speak(w, 'Done! ' + clip(sub.name, 50), 2400)), wait(2400),
+        run(() => speak(r.boss, 'Great work, thanks!', 1800)), wait(1200), run(() => unspot(r, w)), walk(() => DOOR), { t: 'fade' },
+        run(() => { r.slots[w.slot] = null; }));
+    },
+    notify(s, msg, live) {
+      const r = room(s);
+      r.boss.sticky = '';
+      if (!live) { r.away = false; r.boss.sticky = '⚠ ' + clip(msg, 60); return; }
+      r.away = true;
+      r.boss.queue.push(walk(() => ({ x: DOOR.x + 70, y: DOOR.y })), run(() => { const y = you(r); y.alpha = 1; y.x = DOOR.x + 22; }),
+        run(() => speak(r.boss, clip(msg, 90), 6000)), wait(6000), run(() => { r.boss.sticky = 'Waiting on you…'; }));
+    },
+    stop(s, live) {
+      const r = room(s); bossHome(r, live);
+      r.boss.sticky = '';
+      if (live) speak(r.boss, 'All done ✓', 3000);
+    },
+    end(s) { const r = rooms.get(s.id); if (r) r.ended = true; },
+    clear() { rooms.clear(); },
+    count: () => rooms.size,
+  };
+
+  // ---- simulation ----
+  function step(c, dt, now) {
+    if (!c.cur && c.queue.length) {
+      if (c.queue.length > 16) c.queue = c.queue.slice(-16);
+      c.cur = c.queue.shift(); c.cur.start = now;
+    }
+    const k = c.cur;
+    c.walking = false;
+    if (k) {
+      if (k.t === 'walk') {
+        const to = k.target || (k.target = k.to()); c.seated = false;
+        const dx = to.x - c.x, dy = to.y - c.y, d = Math.hypot(dx, dy), v = 120 * dt;
+        if (Math.abs(dx) > 1) c.facing = Math.sign(dx);
+        if (d <= v) { c.x = to.x; c.y = to.y; c.cur = null; } else { c.x += dx / d * v; c.y += dy / d * v; c.walking = true; }
+      } else if (k.t === 'wait') { if (now - k.start >= k.ms) c.cur = null; }
+      else if (k.t === 'do') { k.fn(); c.cur = null; }
+      else if (k.t === 'sit') { c.seated = true; c.cur = null; }
+      else if (k.t === 'fade') { c.alpha -= dt * 2; if (c.alpha <= 0) { c.gone = true; c.cur = null; } }
+    }
+    if (!c.leaving || c.cur?.t !== 'fade') c.alpha = Math.min(1, c.alpha + dt * 3);
+    c.phase += dt * (c.walking ? 12 : 4);
+    if (c.bubble && now > c.bubble.until) c.bubble = null;
+  }
+
+  // ---- drawing ----
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+
+  function drawDesk(ctx, d, on, T) {
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; rr(ctx, d.x - 40, d.y + 10, 80, 8, 4); ctx.fill();
+    ctx.fillStyle = T.desk; rr(ctx, d.x - 38, d.y - 4, 76, 16, 4); ctx.fill();
+    ctx.fillStyle = T.deskEdge; ctx.fillRect(d.x - 38, d.y + 8, 76, 4);
+    ctx.fillStyle = '#2a2a2e'; rr(ctx, d.x - 16, d.y - 26, 32, 22, 3); ctx.fill();
+    ctx.fillStyle = on ? T.screenOn : '#3b3d44'; rr(ctx, d.x - 13, d.y - 23, 26, 15, 2); ctx.fill();
+    if (on) { ctx.fillStyle = 'rgba(255,255,255,.7)'; for (let i = 0; i < 3; i++) ctx.fillRect(d.x - 10, d.y - 20 + i * 4, 8 + ((i * 7 + Math.floor(performance.now() / 300)) % 12), 1.5); }
+  }
+
+  function drawPerson(ctx, c, T, fs) {
+    ctx.save(); ctx.globalAlpha = Math.max(0, c.alpha);
+    const x = c.x, y = c.y, bob = c.walking ? Math.abs(Math.sin(c.phase)) * 2 : 0;
+    ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.beginPath(); ctx.ellipse(x, y + 1, 10, 3.5, 0, 0, 7); ctx.fill();
+    // legs
+    ctx.strokeStyle = '#3a3a44'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    const sw = c.walking ? Math.sin(c.phase) * 5 : 0;
+    ctx.beginPath(); ctx.moveTo(x - 3, y - 12 - bob); ctx.lineTo(x - 3 + sw, y - 1);
+    ctx.moveTo(x + 3, y - 12 - bob); ctx.lineTo(x + 3 - sw, y - 1); ctx.stroke();
+    // body + arms
+    ctx.fillStyle = c.shirt; rr(ctx, x - 8, y - 30 - bob, 16, 19, 6); ctx.fill();
+    const typing = c.seated && c.sticky;
+    const arm = typing ? Math.sin(c.phase * 3) * 2 : c.walking ? -sw * .6 : 0;
+    ctx.strokeStyle = c.shirt; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(x - 7, y - 26 - bob); ctx.lineTo(x - 10 + (typing ? 5 : 0), y - 15 - bob + arm);
+    ctx.moveTo(x + 7, y - 26 - bob); ctx.lineTo(x + 10 - (typing ? 5 : 0), y - 15 - bob - arm); ctx.stroke();
+    // head
+    ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(x, y - 38 - bob, 8, 0, 7); ctx.fill();
+    ctx.fillStyle = c.hair; ctx.beginPath(); ctx.arc(x, y - 40 - bob, 8.2, Math.PI * 1.05, Math.PI * 1.95); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.fillRect(x - 3 + c.facing, y - 38 - bob, 1.6, 2); ctx.fillRect(x + 2 + c.facing, y - 38 - bob, 1.6, 2);
+    ctx.restore();
+  }
+  function drawName(ctx, c, T, fs) {
+    if (c.alpha < .3) return;
+    ctx.save(); ctx.globalAlpha = c.alpha * .85;
+    ctx.font = `600 ${10 * fs}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    const nm = c.name.length > 22 ? c.name.slice(0, 21) + '…' : c.name, hw = ctx.measureText(nm).width / 2 + 4;
+    ctx.fillStyle = T.text; ctx.fillText(nm, Math.min(Math.max(c.x, hw), RW - hw), c.y + (c.seated ? 44 : 12 * fs));
+    ctx.restore();
+  }
+
+  function wrap(ctx, text, maxW, maxLines) {
+    const words = String(text).split(' '), lines = []; let cur = '';
+    for (const w of words) {
+      const t = cur ? cur + ' ' + w : w;
+      if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
+      if (lines.length === maxLines) break;
+    }
+    if (lines.length < maxLines && cur) lines.push(cur);
+    if (lines.length === maxLines && words.join(' ') !== lines.join(' ')) {
+      let l = lines[maxLines - 1]; while (l && ctx.measureText(l + '…').width > maxW) l = l.slice(0, -1); lines[maxLines - 1] = l + '…';
+    }
+    return lines.map(l => { while (ctx.measureText(l).width > maxW) l = l.slice(0, -2) + '…'; return l; });
+  }
+  function drawBubble(ctx, c, T, fs) {
+    const talk = c.bubble, text = talk ? talk.text : (c.seated || c === c._boss) && c.sticky;
+    if (!text || c.alpha < .5) return;
+    ctx.save();
+    ctx.font = `${talk ? 600 : 400} ${11.5 * fs}px system-ui, sans-serif`;
+    const lines = wrap(ctx, text, 150 * fs, talk ? 3 : 2), lh = 14 * fs;
+    const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 16, h = lines.length * lh + 10;
+    let bx = Math.min(Math.max(c.x - w / 2, 4), RW - w - 4); const by = Math.max(4, c.y - 52 - h);
+    ctx.globalAlpha = c.alpha * (talk ? 1 : .9);
+    ctx.fillStyle = talk ? T.bubble : T.thought; ctx.strokeStyle = T.bubbleLine; ctx.lineWidth = 1;
+    rr(ctx, bx, by, w, h, 8); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(c.x - 5, by + h - .5); ctx.lineTo(c.x, by + h + 7); ctx.lineTo(c.x + 5, by + h - .5); ctx.fill();
+    ctx.fillStyle = talk ? T.bubbleText : T.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    lines.forEach((l, i) => ctx.fillText(l, bx + 8, by + 6 + i * lh));
+    ctx.restore();
+  }
+
+  function drawRoom(ctx, r, T, fs) {
+    const s = sessions.get(r.sid) || {};
+    ctx.fillStyle = T.floor; rr(ctx, 0, 0, RW, RH, 14); ctx.fill();
+    ctx.save(); rr(ctx, 0, 0, RW, RH, 14); ctx.clip();
+    ctx.strokeStyle = T.tile; ctx.lineWidth = 1;
+    for (let x = 40; x < RW; x += 40) { ctx.beginPath(); ctx.moveTo(x, 54); ctx.lineTo(x, RH); ctx.stroke(); }
+    for (let y = 94; y < RH; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(RW, y); ctx.stroke(); }
+    ctx.fillStyle = T.wall; ctx.fillRect(0, 0, RW, 54);
+    ctx.fillStyle = T.rug; ctx.beginPath(); ctx.ellipse(BOSS.x, BOSS.y + 16, 90, 30, 0, 0, 7); ctx.fill();
+    // window + plant
+    ctx.fillStyle = T.window; rr(ctx, 400, 12, 110, 32, 4); ctx.fill();
+    ctx.fillStyle = '#7a5a3a'; rr(ctx, RW - 34, RH - 40, 18, 18, 3); ctx.fill();
+    ctx.fillStyle = '#4f9a5a'; [[-6, -48], [4, -52], [-1, -58], [8, -44]].forEach(([dx, dy]) => { ctx.beginPath(); ctx.ellipse(RW - 25 + dx, RH + dy, 7, 11, dx / 10, 0, 7); ctx.fill(); });
+    // door
+    ctx.fillStyle = T.door; rr(ctx, 0, DOOR.y - 58, 14, 62, 2); ctx.fill();
+    ctx.fillStyle = '#e2c26b'; ctx.beginPath(); ctx.arc(10, DOOR.y - 26, 2, 0, 7); ctx.fill();
+    ctx.restore();
+    // title
+    ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+    ctx.font = `650 ${15 * fs}px system-ui, sans-serif`; ctx.fillStyle = T.text;
+    const title = base(s.cwd) || 'Claude session'; ctx.fillText(title, 16, 24 * Math.min(fs, 1.15) + 6);
+    const st = s.status === 'working' && Date.now() - s.last > 6e5 ? 'quiet' : s.status;
+    const label = { working: 'Working', waiting: 'Needs you', idle: 'Idle', ended: 'Ended', quiet: 'Quiet' }[st] || '';
+    const tw = ctx.measureText(title).width; ctx.font = `600 ${11 * fs}px system-ui, sans-serif`;
+    const pw = ctx.measureText(label).width + 14, px = 26 + tw, py = 13;
+    ctx.strokeStyle = ctx.fillStyle = { working: T.work, waiting: T.wait }[st] || T.muted;
+    rr(ctx, px, py, pw, 17 * Math.min(fs, 1.15), 9); ctx.stroke(); ctx.fillText(label, px + 7, py + 12.5 * Math.min(fs, 1.15));
+    // desks + people, back to front
+    const drawn = [];
+    SLOTS.forEach((d, i) => { const k = r.slots[i]; const o = k && r.people.get(k); drawn.push({ y: d.y, f: () => drawDesk(ctx, d, o && o.seated && o.sticky, T) }); });
+    drawn.push({ y: BOSS.y, f: () => drawDesk(ctx, BOSS, r.boss.seated && r.boss.sticky, T) });
+    for (const c of r.people.values()) { c._boss = r.boss; drawn.push({ y: c.y, f: () => drawPerson(ctx, c, T, fs) }); }
+    drawn.sort((a, b) => a.y - b.y).forEach(o => o.f());
+    for (const c of r.people.values()) drawName(ctx, c, T, fs);
+    for (const c of r.people.values()) drawBubble(ctx, c, T, fs);
+    if (r.ended) { ctx.fillStyle = T.dim; rr(ctx, 0, 0, RW, RH, 14); ctx.fill(); }
+  }
+
+  const canvas = document.getElementById('officeCanvas'), ctx = canvas.getContext('2d');
+  let prev = performance.now();
+  function frame(now) {
+    const dt = Math.min(.05, (now - prev) / 1000); prev = now;
+    for (const r of rooms.values()) {
+      for (const [k, c] of r.people) { step(c, dt, now); if (c.gone) { r.people.delete(k); if (c === r.you) r.you = null; } }
+      if (r.ended && Date.now() - (sessions.get(r.sid)?.last || 0) > 6e5) rooms.delete(r.sid);
+    }
+    if (!canvas.offsetParent) return requestAnimationFrame(frame);
+    const list = [...rooms.values()].sort((a, b) => a.order - b.order);
+    const W = canvas.parentElement.clientWidth, cols = W >= 760 ? 2 : 1, gap = 16;
+    const colW = (W - gap * (cols - 1)) / cols, sc = Math.min(colW / RW, 1.35), fs = Math.max(1, .8 / sc);
+    const rowsN = Math.ceil(list.length / cols), H = rowsN * (RH * sc + gap);
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = H + 'px';
+    }
+    const T = { text: css('--text'), muted: css('--muted'), work: css('--work'), wait: css('--wait'),
+      floor: css('--floor'), tile: css('--tile'), wall: css('--wall'), rug: css('--rug'), window: css('--window'),
+      door: css('--door'), desk: css('--desk'), deskEdge: css('--desk-edge'), screenOn: css('--screen-on'),
+      bubble: css('--bubble'), bubbleText: css('--bubble-text'), bubbleLine: css('--line'), thought: css('--panel'), dim: css('--dim') };
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    list.forEach((r, i) => {
+      const cx = (i % cols) * (colW + gap) + (colW - RW * sc) / 2, cy = Math.floor(i / cols) * (RH * sc + gap);
+      ctx.setTransform(dpr * sc, 0, 0, dpr * sc, dpr * cx, dpr * cy);
+      drawRoom(ctx, r, T, fs);
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  return api;
+})();
+
+let view = 'office';
+try { view = localStorage.getItem('dash-view') || 'office'; } catch {}
+function setView(v) {
+  view = v; try { localStorage.setItem('dash-view', v); } catch {}
+  document.getElementById('viewOffice').classList.toggle('on', v === 'office');
+  document.getElementById('viewList').classList.toggle('on', v === 'list');
+  syncView();
+}
+function syncView() {
+  const showOffice = view === 'office' && sessions.size > 0;
+  document.getElementById('office').hidden = !showOffice;
+  document.getElementById('sessions').hidden = showOffice;
+}
+document.getElementById('viewOffice').onclick = () => setView('office');
+document.getElementById('viewList').onclick = () => setView('list');
+setView(view);
+
 document.getElementById('clearBtn').onclick = async () => {
   if (!confirm('Clear all recorded activity?')) return;
   await fetch('/clear', { method: 'POST' }).catch(() => {});
-  sessions.clear(); feed.length = 0; lastId = 0; dirty = true;
+  sessions.clear(); feed.length = 0; lastId = 0; dirty = true; office.clear();
 };
 setInterval(() => render(), 1000);   // also refreshes timers
 poll(); render();

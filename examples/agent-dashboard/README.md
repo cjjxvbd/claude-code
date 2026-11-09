@@ -31,6 +31,18 @@ fail quietly.
 
 ## What you'll see
 
+**Office view** (the default): each Claude session is a little office.
+
+- The **lead agent** sits at the big desk, with a bubble showing what it's doing right now.
+- When it starts a helper agent, the helper **walks in, gets its task** in a
+  speech bubble ("Can you write login tests?"), and goes to its own desk.
+- When a helper finishes, it **walks back to report** ("Done!"), then leaves.
+- **You** walk in through the door when you send a message. When Claude needs
+  your permission, the lead walks over to you at the door and asks.
+
+**List view** shows the same thing as plain cards. Switch with the buttons at the top.
+
+
 | Status    | Meaning                                           |
 |-----------|---------------------------------------------------|
 | Working   | Claude is running tools or agents                 |
