@@ -66,7 +66,10 @@
   .tabs button { border: 0; border-radius: 0; background: transparent; }
   .tabs button.on { background: var(--chip); font-weight: 600; }
   #office { position: relative; overflow-x: auto; overflow-y: hidden; border-radius: 12px; border: 1px solid var(--line); background: #1d2a52; }
-  #office canvas { display: block; margin: 0 auto; }
+  #office canvas, #station canvas { display: block; margin: 0 auto; }
+  #station { position: relative; overflow-x: auto; overflow-y: hidden; border-radius: 12px; border: 1px solid #1d4d36; background: #03070a; }
+  main.full { grid-template-columns: minmax(0, 1fr); }
+  main.full .feed { display: none; }
   .tip { position: absolute; z-index: 3; pointer-events: none; max-width: 240px; padding: 8px 10px; border-radius: 8px;
          background: rgba(24,26,33,.94); color: #f4f6fa; font-size: 12.5px; line-height: 1.35; box-shadow: 0 6px 20px rgba(0,0,0,.3); }
   .tip b { display: block; font-size: 13px; margin-bottom: 2px; }
@@ -82,11 +85,12 @@
   <span class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
   <span class="spacer"></span>
   <span class="conn" id="counts"></span>
-  <span class="tabs"><button id="viewOffice" class="on">Office</button><button id="viewList">List</button></span>
+  <span class="tabs"><button id="viewStation" class="on">Command</button><button id="viewOffice">Office</button><button id="viewList">List</button></span>
   <button id="clearBtn" title="Forget all events on the server">Clear</button>
 </header>
 <main>
   <section>
+    <div id="station"><canvas id="stationCanvas" aria-label="Sci-fi command map of your Claude sessions and agents"></canvas><div id="stationTip" class="tip" hidden></div></div>
     <div id="office"><canvas id="officeCanvas" aria-label="Animated office building showing your Claude agents"></canvas><div id="officeTip" class="tip" hidden></div></div>
     <div id="sessions" hidden></div>
   </section>
@@ -158,7 +162,7 @@ function apply({ ts, e }) {
     case 'UserPromptSubmit':
       s.prompt = e.prompt || ''; s.status = 'working'; s.started = ts;
       main.status = 'working'; main.now = 'Thinking…';
-      office.prompt(s, e.prompt || '', live);
+      scene.prompt(s, e.prompt || '', live);
       line = 'You: ' + esc(clip(e.prompt, 160)); break;
     case 'PreToolUse':
       s.status = 'working'; a.status = 'working'; a.now = toolHtml(e.tool_name, e.tool_input);
@@ -167,31 +171,31 @@ function apply({ ts, e }) {
         s.agents.set(e.tool_use_id || ('t' + ts), { key: e.tool_use_id || ('t' + ts), name: i.description || 'Subagent',
           type: i.subagent_type || '', status: 'working', now: esc(clip(i.prompt, 160)), tools: 0, started: ts,
           background: !!i.run_in_background, parent: a.key });
-        office.spawn(s, s.agents.get(e.tool_use_id || ('t' + ts)), live);
-      } else office.tool(s, a, plain(), live, e.tool_name);
+        scene.spawn(s, s.agents.get(e.tool_use_id || ('t' + ts)), live);
+      } else scene.tool(s, a, plain(), live, e.tool_name);
       line = a.now; break;
     case 'PostToolUse':
       a.tools++; a.now = a.key === 'main' ? 'Thinking…' : 'Working…';
       if (isAgentTool(e.tool_name) && s.agents.has(e.tool_use_id)) {
         const sub = s.agents.get(e.tool_use_id);
-        if (!sub.background) { sub.status = 'done'; sub.now = 'Finished'; sub.ended = ts; office.done(s, sub, live); }
+        if (!sub.background) { sub.status = 'done'; sub.now = 'Finished'; sub.ended = ts; scene.done(s, sub, live); }
       }
       break;
     case 'Notification':
       s.status = 'waiting'; main.status = 'waiting'; main.now = esc(e.message || 'Waiting for you');
-      office.notify(s, e.message || 'I need your OK', live);
+      scene.notify(s, e.message || 'I need your OK', live);
       line = '⚠ ' + esc(e.message || 'Needs your input'); break;
     case 'SubagentStop': {
-      if (a.key !== 'main') { a.status = 'done'; a.now = 'Finished'; a.ended = ts; office.done(s, a, live); }
+      if (a.key !== 'main') { a.status = 'done'; a.now = 'Finished'; a.ended = ts; scene.done(s, a, live); }
       line = 'Agent finished: ' + esc(a.name); break; }
     case 'Stop':
       s.status = 'idle'; main.status = 'idle'; main.now = 'Done — waiting for your next message';
-      for (const x of s.agents.values()) if (x.key !== 'main' && x.status === 'working' && !x.background) { x.status = 'done'; x.now = 'Finished'; office.done(s, x, live); }
-      office.stop(s, live);
+      for (const x of s.agents.values()) if (x.key !== 'main' && x.status === 'working' && !x.background) { x.status = 'done'; x.now = 'Finished'; scene.done(s, x, live); }
+      scene.stop(s, live);
       line = 'Turn finished'; break;
     case 'SessionEnd':
       s.status = 'ended'; for (const x of s.agents.values()) { x.status = x.status === 'working' ? 'done' : x.status; }
-      office.end(s);
+      scene.end(s);
       line = 'Session ended'; break;
   }
   if (line) feed.push({ ts, who: a.key === 'main' ? base(s.cwd) || 'claude' : a.name, html: line });
@@ -1267,19 +1271,672 @@ const office = (() => {
   return api;
 })();
 
-let view = 'office';
-try { view = localStorage.getItem('dash-view') || 'office'; } catch {}
+// ---------------- Command view: sci-fi control room ----------------
+// Sessions are modules around a central core. Tool calls fly as data packets to
+// service rooms (files, terminal, web, tool relay); helpers walk out of the agent bay.
+const station = (() => {
+  const canvas = document.getElementById('stationCanvas'), ctx = canvas.getContext('2d');
+  const wrapEl = document.getElementById('station'), tip = document.getElementById('stationTip');
+  const W = 1600, H = 900, PI = Math.PI;
+  const MONO = 'Consolas, "Cascadia Mono", "SF Mono", ui-monospace, Menlo, monospace';
+  const G = '#39ff88', AMBER = '#ffb020', GREY = '#5f7d70';
+  const MAP = { x0: 12, y0: 58, x1: 1184, y1: 804 };
+  const CORE = { id: 'core', name: 'CLAUDE CORE', x: 596, y: 428, w: 250, h: 190, color: G };
+  const BUS = { top: 292, bot: 564 };
+  const SV = {
+    bay: { id: 'bay', name: 'AGENT BAY', x: 150, y: 150, w: 220, h: 124, color: '#2ef2ff', row: 'top', hits: 0, flash: 0, items: [] },
+    net: { id: 'net', name: 'NET UPLINK', x: 1040, y: 150, w: 200, h: 124, color: '#b388ff', row: 'top', hits: 0, flash: 0, items: [] },
+    files: { id: 'files', name: 'FILE VAULT', x: 150, y: 428, w: 200, h: 170, color: '#4cc9ff', row: 'mid', side: -1, hits: 0, flash: 0, items: [] },
+    term: { id: 'term', name: 'TERMINAL', x: 150, y: 706, w: 220, h: 124, color: '#ff9f43', row: 'bot', hits: 0, flash: 0, items: [] },
+    relay: { id: 'relay', name: 'TOOL RELAY', x: 1040, y: 706, w: 200, h: 124, color: '#ff5fa2', row: 'bot', hits: 0, flash: 0, items: [] },
+  };
+  const SLOTS = [{ x: 410, y: 150, w: 260, h: 124, row: 'top' }, { x: 785, y: 150, w: 260, h: 124, row: 'top' }, { x: 1040, y: 428, w: 220, h: 190, row: 'mid', side: 1 },
+                 { x: 410, y: 706, w: 260, h: 124, row: 'bot' }, { x: 785, y: 706, w: 260, h: 124, row: 'bot' }];
+  const HCOL = ['#2ef2ff', '#ffd166', '#c792ea', '#ff8fab', '#7cf29a', '#4cc9ff', '#f4a261'];
+  const STATUS_C = { working: G, waiting: AMBER, idle: '#3fb6a8', ended: GREY, quiet: '#3fb6a8' };
+  const STATUS_W = { working: 'ACTIVE', waiting: 'AUTH REQ', idle: 'STANDBY', ended: 'OFFLINE', quiet: 'QUIET' };
+  const svFor = t => /^(Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob)$/.test(t || '') ? 'files'
+    : /^(Bash|PowerShell|BashOutput|KillShell)$/.test(t || '') ? 'term' : /^Web/.test(t || '') ? 'net' : 'relay';
+  const VERB = { Read: 'READ', Edit: 'EDIT', MultiEdit: 'EDIT', Write: 'WRITE', NotebookEdit: 'EDIT', Grep: 'GREP', Glob: 'SCAN', Bash: 'EXEC', PowerShell: 'EXEC', WebFetch: 'FETCH', WebSearch: 'QUERY' };
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  const lc = s => s.replace(/^./, m => m.toLowerCase());
+  const t0 = performance.now();
+
+  const rooms = new Map();         // sid -> module
+  let agents = [], packets = [], floats = [], timers = [], logs = [], hits = [];
+  const stats = { total: 0, files: 0, term: 0, net: 0, relay: 0, spawned: 0, hist: new Array(48).fill(0), histAt: 0 };
+  let sc = 1, nextId = 1;
+
+  // ---- geometry ----
+  function corePath(R) {
+    if (R.row === 'mid') {
+      const ex = R.side < 0 ? R.x + R.w / 2 : R.x - R.w / 2, cx = R.side < 0 ? CORE.x - CORE.w / 2 : CORE.x + CORE.w / 2;
+      return [[R.x, R.y], [ex, R.y], [cx, CORE.y], [CORE.x, CORE.y]];
+    }
+    const top = R.row === 'top', by = top ? BUS.top : BUS.bot, ey = top ? R.y + R.h / 2 : R.y - R.h / 2, cy = top ? CORE.y - CORE.h / 2 : CORE.y + CORE.h / 2;
+    return [[R.x, R.y], [R.x, ey], [R.x, by], [CORE.x, by], [CORE.x, cy], [CORE.x, CORE.y]];
+  }
+  const door = R => { const p = corePath(R)[1]; return { x: p[0], y: p[1] }; };
+  function routeFrom(p, A, B) {   // from a point inside A to the centre of B (via the core)
+    const a = A === CORE ? [[CORE.x, CORE.y]] : corePath(A), b = B === CORE ? [[CORE.x, CORE.y]] : corePath(B).slice().reverse();
+    return [[p.x, p.y], ...(A === CORE ? [] : a.slice(1)), ...b.slice(1)];
+  }
+  function intoSeat(path, seat) { path = path.slice(0, -1); path.push([seat.x, seat.y]); return path; }
+  function consolePos(R, i) {
+    const hw = R.w / 2, hh = R.h / 2, xs = [.25, .55, .85], top = i < 3;
+    return { x: R.x + hw * xs[i % 3], y: R.y + (top ? -hh + 11 : hh - 11), sx: R.x + hw * xs[i % 3], sy: R.y + (top ? -hh + 30 : hh - 30), top };
+  }
+  const holo = R => ({ x: R.x - R.w * .26, y: R.y + (R.row === 'mid' ? -16 : -10) });
+  const leadSeat = R => { const h = holo(R); return { x: h.x, y: h.y + 40 }; };
+  const pod = i => ({ x: SV.bay.x - 80 + i * 32, y: SV.bay.y + 8 });
+  const later = (ms, fn) => timers.push({ at: performance.now() + ms, fn });
+
+  // ---- entities ----
+  function agent(o) {
+    return Object.assign({ path: [], then: null, speed: 120, dir: PI / 2, alpha: 1, bubble: null, act: '', phase: Math.random() * 6, inRoom: true }, o);
+  }
+  function say(a, text, ms = 2600) { a.bubble = { text, until: performance.now() + ms }; }
+  function walkTo(a, path, then) { a.path = path.slice(1); a.then = then || null; a.inRoom = false; }
+  function packet(pts, color, o = {}) { if (packets.length > 160) return; packets.push({ pts: pts.slice(1), x: pts[0][0], y: pts[0][1], color, size: o.size || 3.4, speed: o.speed || 360, then: o.then, trail: [] }); }
+  function float(x, y, text, color) { floats.push({ x, y, text, color, life: 2.2, max: 2.2 }); if (floats.length > 40) floats.shift(); }
+  function log(who, R, text, color) {
+    const d = new Date(), ts = d.toTimeString().slice(0, 8);
+    logs.push({ ts, who, mod: R ? R.code : '', text: String(text).replace(/\s+/g, ' '), color, born: performance.now() });
+    if (logs.length > 60) logs.shift();
+  }
+  function bump() { stats.total++; stats.hist[stats.hist.length - 1]++; }
+
+  function room(s) {
+    let R = rooms.get(s.id);
+    if (R) return R;
+    const used = new Set([...rooms.values()].map(r => r.slotIdx));
+    let idx = SLOTS.findIndex((_, i) => !used.has(i));
+    if (idx < 0) {   // all modules busy: recycle the quietest one
+      const old = [...rooms.values()].sort((a, b) => (a.status === 'ended') - (b.status === 'ended') || a.last - b.last).pop();
+      if (old) { idx = old.slotIdx; drop(old); } else idx = 0;
+    }
+    const n = String(idx + 1).padStart(2, '0');
+    R = Object.assign({ kind: 'mod', sid: s.id, slotIdx: idx, code: 'MOD-' + n, consoles: Array(6).fill(null), prompt: '', shown: 0, status: 'idle', alert: null,
+      boot: 0, last: performance.now(), hist: new Array(30).fill(0), ops: 0 }, SLOTS[idx]);
+    const ls = leadSeat(R);
+    R.lead = agent({ key: 'lead-' + s.id, label: 'LEAD', role: 'lead', R, x: ls.x, y: ls.y, color: G, dir: -PI / 2, speed: 90 });
+    agents.push(R.lead);
+    rooms.set(s.id, R);
+    log('SYS', R, 'module online · ' + (base(s.cwd) || 'session'), '#7fa898');
+    return R;
+  }
+  function drop(R) { rooms.delete(R.sid); agents = agents.filter(a => a.R !== R); }
+  function helper(R, a, instant) {
+    let h = agents.find(x => x.key === a.key);
+    if (h) return h;
+    let i = R.consoles.indexOf(null); if (i < 0) i = Math.floor(Math.random() * 6);
+    R.consoles[i] = a.key;
+    const id = 'H-' + String(nextId++).padStart(2, '0'), c = consolePos(R, i);
+    h = agent({ key: a.key, label: id, name: a.name, type: a.type, role: 'helper', R, console: i, color: HCOL[nextId % HCOL.length], x: c.sx, y: c.sy, dir: c.top ? -PI / 2 : PI / 2, agentRef: a });
+    if (!instant) { const p = pod(nextId % 6); h.x = p.x; h.y = p.y; h.inRoom = false; h.alpha = 0; }
+    agents.push(h);
+    return h;
+  }
+  function originOf(R, a) { return a && a.inRoom ? { x: a.x, y: a.y } : holo(R); }
+  function shoot(R, a, sv, label) {
+    const S = SV[sv], from = originOf(R, a), path = routeFrom(from, R, S);
+    const col = S.color;
+    packet(path, col, { then: () => {
+      S.flash = 1; S.hits++; float(S.x + (Math.random() - .5) * 60, S.y - S.h / 2 + 10, label, col);
+      if (packets.length < 120) packet(path.slice().reverse(), col, { size: 2.4, speed: 420 });
+    } });
+  }
+
+  // ---- public API (same hooks as the office view) ----
+  const api = {
+    prompt(s, text, live) {
+      const R = room(s); R.status = 'working'; R.alert = null; R.last = performance.now();
+      if (!live) { R.prompt = text; R.shown = text.length; return; }
+      log('USER', R, text, '#e8fff2');
+      const h = holo(R);
+      packet([[CORE.x, MAP.y0], [CORE.x, CORE.y]], '#ffffff', { size: 4.5, speed: 520, then: () => {
+        CORE.flash = 1;
+        packet(intoSeat(routeFrom({ x: CORE.x, y: CORE.y }, CORE, R), h), '#ffffff', { size: 4, speed: 460, then: () => {
+          R.prompt = text; R.shown = 0; R.flash = 1; say(R.lead, 'Directive received.', 2000);
+        } });
+      } });
+    },
+    tool(s, a, text, live, tool) {
+      const R = room(s), ag = a.key === 'main' ? R.lead : helper(R, a, !live);
+      ag.act = text; R.status = 'working'; R.alert = null; R.last = performance.now();
+      const sv = svFor(tool); stats[sv]++; R.ops++; R.hist[R.hist.length - 1]++;
+      const S = SV[sv]; S.items.push(text); if (S.items.length > 6) S.items.shift();
+      if (!live) return;
+      bump();
+      const verb = VERB[tool] || (tool && tool.startsWith('mcp__') ? 'MCP' : String(tool || 'TOOL').toUpperCase());
+      shoot(R, ag, sv, verb + ' ' + clip(text.replace(/^\S+\s/, ''), 22));
+      if (Math.random() < .25) log(ag.label, R, text, ag.color);
+    },
+    spawn(s, sub, live) {
+      const R = room(s); R.status = 'working'; R.last = performance.now();
+      const h = helper(R, sub, !live); h.act = 'Assigned: ' + sub.name;
+      if (!live) return;
+      stats.spawned++; bump();
+      log('LEAD', R, 'deploying ' + h.label + ' → ' + sub.name, G);
+      const p = pod(nextId % 6), c = consolePos(R, h.console);
+      SV.bay.flash = 1;
+      later(250, () => {
+        h.alpha = 1;
+        walkTo(h, intoSeat(routeFrom(p, SV.bay, R), { x: c.sx, y: c.sy }), () => {
+          h.inRoom = true; h.dir = c.top ? -PI / 2 : PI / 2;
+          say(R.lead, h.label + ', ' + lc(clip(sub.name, 44)) + '.', 2600);
+          later(1400, () => say(h, pick(['On it.', 'Copy that.', 'Acknowledged.', 'Working.']), 1600));
+          log(h.label, R, 'on station · ' + sub.name, h.color);
+        });
+      });
+    },
+    done(s, sub, live) {
+      const R = rooms.get(s.id); if (!R) return;
+      const h = agents.find(x => x.key === sub.key && !x.leaving); if (!h) return;
+      h.leaving = true; h.act = 'Returning to bay';
+      const free = () => { if (R.consoles[h.console] === sub.key) R.consoles[h.console] = null; };
+      if (!live) { free(); agents = agents.filter(x => x !== h); return; }
+      say(h, 'Task complete ✓', 2200); log(h.label, R, 'complete · ' + sub.name, h.color);
+      packet([[h.x, h.y], [R.lead.x, R.lead.y]], G, { size: 4, speed: 200, then: () => { say(R.lead, 'Good work, ' + h.label + '.', 1800); R.flash = 1; } });
+      later(1800, () => {
+        free();
+        const p = pod(Math.floor(Math.random() * 6));
+        walkTo(h, intoSeat(routeFrom({ x: h.x, y: h.y }, R, SV.bay), p), () => { SV.bay.flash = 1; h.gone = true; });
+      });
+    },
+    notify(s, msg, live) {
+      const R = room(s); R.status = 'waiting'; R.alert = { msg, at: performance.now() }; R.last = performance.now();
+      if (!live) return;
+      say(R.lead, 'Awaiting authorization…', 4000);
+      log('ALERT', R, msg, AMBER); bump();
+      packet([...routeFrom(holo(R), R, CORE), [CORE.x, MAP.y0]], AMBER, { size: 4.5, speed: 480 });
+    },
+    stop(s, live) {
+      const R = room(s); R.status = 'idle'; R.alert = null; R.last = performance.now();
+      for (const a of agents) if (a.R === R && a.role === 'lead') a.act = '';
+      if (!live) return;
+      say(R.lead, 'Turn complete. Standing by.', 2600);
+      log('LEAD', R, 'turn complete', '#3fb6a8');
+      packet([...routeFrom(holo(R), R, CORE), [CORE.x, MAP.y0]], G, { size: 3.5, speed: 480 });
+    },
+    end(s) { const R = rooms.get(s.id); if (R) { R.status = 'ended'; R.endedAt = Date.now(); log('SYS', R, 'module offline', GREY); } },
+    clear() { rooms.clear(); agents = []; packets = []; floats = []; logs = []; Object.values(SV).forEach(S => { S.items = []; S.hits = 0; }); },
+  };
+
+  // ---- simulation ----
+  function moveAlong(o, dt) {
+    let v = o.speed * dt; const list = o.pts || o.path;
+    while (v > 0 && list.length) {
+      const [tx, ty] = list[0], dx = tx - o.x, dy = ty - o.y, d = Math.hypot(dx, dy);
+      if (d > .01) o.dir = Math.atan2(dy, dx);
+      if (d <= v) { o.x = tx; o.y = ty; list.shift(); v -= d; } else { o.x += dx / d * v; o.y += dy / d * v; v = 0; }
+    }
+  }
+  function step(dt, now) {
+    for (let i = timers.length - 1; i >= 0; i--) if (now >= timers[i].at) { const f = timers[i].fn; timers.splice(i, 1); f(); }
+    for (const a of agents) {
+      a.moving = a.path.length > 0;
+      if (a.moving) { moveAlong(a, dt); if (!a.path.length && a.then) { const f = a.then; a.then = null; f(); } }
+      a.phase += dt * (a.moving ? 10 : 2);
+      if (a.bubble && now > a.bubble.until) a.bubble = null;
+    }
+    agents = agents.filter(a => !a.gone);
+    for (const p of packets) {
+      p.trail.push([p.x, p.y]); if (p.trail.length > 10) p.trail.shift();
+      moveAlong(p, dt);
+      if (!p.pts.length && !p.done) { p.done = true; p.fade = .25; if (p.then) p.then(); }
+      if (p.done) p.fade -= dt;
+    }
+    packets = packets.filter(p => !p.done || p.fade > 0);
+    for (const f of floats) { f.y -= dt * 14; f.life -= dt; }
+    floats = floats.filter(f => f.life > 0);
+    Object.values(SV).concat([CORE]).forEach(S => { S.flash = Math.max(0, (S.flash || 0) - dt * 2); });
+    for (const R of rooms.values()) {
+      R.boot = Math.min(1, R.boot + dt * .9); R.flash = Math.max(0, (R.flash || 0) - dt * 2);
+      if (R.shown < R.prompt.length) R.shown = Math.min(R.prompt.length, R.shown + dt * 40);
+      const s = sessions.get(R.sid); if (s && s.status === 'ended' && R.status !== 'ended') api.end({ id: R.sid });
+      if (R.status === 'ended' && Date.now() - R.endedAt > 6e5) drop(R);
+    }
+    const bucket = Math.floor((now - t0) / 4000);
+    if (bucket !== stats.histAt) { stats.histAt = bucket; stats.hist.push(0); stats.hist.shift(); for (const R of rooms.values()) { R.hist.push(0); R.hist.shift(); } }
+  }
+
+  // ---- drawing helpers ----
+  function chamfer(x, y, w, h, c) { ctx.beginPath(); ctx.moveTo(x + c, y); ctx.lineTo(x + w - c, y); ctx.lineTo(x + w, y + c); ctx.lineTo(x + w, y + h - c); ctx.lineTo(x + w - c, y + h); ctx.lineTo(x + c, y + h); ctx.lineTo(x, y + h - c); ctx.lineTo(x, y + c); ctx.closePath(); }
+  function txt(c, size, s, x, y, align = 'left', weight = 400, base = 'alphabetic') { ctx.fillStyle = c; ctx.font = `${weight} ${size}px ${MONO}`; ctx.textAlign = align; ctx.textBaseline = base; ctx.fillText(s, x, y); }
+  function alpha(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+  function brackets(x0, y0, x1, y1, c, L = 12, w = 2) {
+    ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath();
+    [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]].forEach(([x, y, sx, sy]) => { ctx.moveTo(x + sx * L, y); ctx.lineTo(x, y); ctx.lineTo(x, y + sy * L); });
+    ctx.stroke();
+  }
+  function panel(x0, y0, x1, y1, title, c = G) {
+    ctx.fillStyle = 'rgba(6,18,13,.82)'; chamfer(x0, y0, x1 - x0, y1 - y0, 8); ctx.fill();
+    ctx.strokeStyle = alpha(c, .45); ctx.lineWidth = 1; ctx.stroke();
+    brackets(x0, y0, x1, y1, c, 14, 2);
+    if (title) { ctx.fillStyle = alpha(c, .16); ctx.fillRect(x0 + 10, y0 + 8, x1 - x0 - 20, 18); txt(c, 11, '▌' + title, x0 + 14, y0 + 21, 'left', 700); }
+  }
+  const glowCache = new Map();
+  function glow(color, r) {
+    const key = color + r; let g = glowCache.get(key);
+    if (!g) { g = document.createElement('canvas'); g.width = g.height = r * 2; const c = g.getContext('2d'), rg = c.createRadialGradient(r, r, 0, r, r, r); rg.addColorStop(0, alpha(color, .9)); rg.addColorStop(.25, alpha(color, .35)); rg.addColorStop(1, alpha(color, 0)); c.fillStyle = rg; c.fillRect(0, 0, r * 2, r * 2); glowCache.set(key, g); }
+    return g;
+  }
+  function blob(x, y, color, r, a = 1) { ctx.globalAlpha = a; ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(glow(color, r), x - r, y - r); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; }
+  const rng = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const rnd = rng(9), dust = Array.from({ length: 160 }, () => [MAP.x0 + rnd() * (MAP.x1 - MAP.x0), MAP.y0 + rnd() * (MAP.y1 - MAP.y0), rnd()]);
+  let scan = null;
+  function scanlines() {
+    if (!scan) { scan = document.createElement('canvas'); scan.width = 4; scan.height = 4; const c = scan.getContext('2d'); c.fillStyle = 'rgba(0,0,0,.22)'; c.fillRect(0, 0, 4, 1.4); }
+    ctx.fillStyle = ctx.createPattern(scan, 'repeat'); ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---- background, corridors ----
+  function drawBG(now) {
+    ctx.fillStyle = '#03070a'; ctx.fillRect(0, 0, W, H);
+    const rg = ctx.createRadialGradient(CORE.x, CORE.y, 40, CORE.x, CORE.y, 900); rg.addColorStop(0, '#0c2219'); rg.addColorStop(1, '#03070a');
+    ctx.fillStyle = rg; ctx.fillRect(MAP.x0, MAP.y0, MAP.x1 - MAP.x0, MAP.y1 - MAP.y0);
+    ctx.strokeStyle = 'rgba(57,255,136,.045)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = MAP.x0; x < MAP.x1; x += 24) { ctx.moveTo(x, MAP.y0); ctx.lineTo(x, MAP.y1); }
+    for (let y = MAP.y0; y < MAP.y1; y += 24) { ctx.moveTo(MAP.x0, y); ctx.lineTo(MAP.x1, y); }
+    ctx.stroke();
+    for (const [x, y, r] of dust) { ctx.fillStyle = `rgba(120,255,190,${.08 + .12 * Math.sin(now / 900 + r * 20) ** 2})`; ctx.fillRect(x, y, 1.3, 1.3); }
+    // decorative pipes and conduits in empty space
+    ctx.strokeStyle = 'rgba(57,255,136,.10)'; ctx.setLineDash([2, 5]); ctx.beginPath();
+    [[60, 260, 360, 260], [880, 600, 1160, 600], [60, 590, 280, 590], [900, 250, 1160, 250], [300, 330, 300, 520], [900, 330, 900, 380]].forEach(([a, b, c, d]) => { ctx.moveTo(a, b); ctx.lineTo(c, d); });
+    ctx.stroke(); ctx.setLineDash([]);
+    [[300, 330], [300, 520], [900, 380]].forEach(([x, y]) => { ctx.strokeStyle = 'rgba(57,255,136,.25)'; ctx.strokeRect(x - 4, y - 4, 8, 8); });
+  }
+  function corridorSet() {
+    const segs = [], all = [...Object.values(SV), ...[...rooms.values()]];
+    const seen = new Set();
+    const add = (a, b) => { const k = [a, b].map(p => p.join(',')).sort().join('|'); if (!seen.has(k)) { seen.add(k); segs.push([a, b]); } };
+    for (const R of all) { const p = corePath(R); for (let i = 1; i < p.length - 1; i++) add(p[i], p[i + 1]); }
+    // empty slots still show their corridor stubs
+    SLOTS.forEach(S => { if (![...rooms.values()].some(r => r.x === S.x && r.y === S.y)) { const p = corePath(S); for (let i = 1; i < p.length - 1; i++) add(p[i], p[i + 1]); } });
+    return segs;
+  }
+  function drawCorridors(now) {
+    const segs = corridorSet();
+    ctx.lineCap = 'square';
+    const pass = (w, c, dash) => { ctx.strokeStyle = c; ctx.lineWidth = w; ctx.setLineDash(dash || []); ctx.beginPath(); segs.forEach(([a, b]) => { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }); ctx.stroke(); };
+    pass(20, '#0f3324'); pass(16, '#06110c');
+    ctx.lineDashOffset = -now / 25; pass(1.4, 'rgba(57,255,136,.35)', [6, 8]); ctx.lineDashOffset = 0; ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(57,255,136,.12)'; ctx.lineWidth = 1;
+    segs.forEach(([a, b]) => { const len = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.floor(len / 22); for (let i = 1; i < n; i++) { const t = i / n, x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, vert = a[0] === b[0]; ctx.beginPath(); vert ? (ctx.moveTo(x - 7, y), ctx.lineTo(x + 7, y)) : (ctx.moveTo(x, y - 7), ctx.lineTo(x, y + 7)); ctx.stroke(); } });
+    const nodes = new Set(); segs.forEach(([a, b]) => { nodes.add(a.join(',')); nodes.add(b.join(',')); });
+    nodes.forEach(k => { const [x, y] = k.split(',').map(Number); ctx.fillStyle = '#0a2418'; ctx.fillRect(x - 6, y - 6, 12, 12); ctx.strokeStyle = 'rgba(57,255,136,.4)'; ctx.strokeRect(x - 6, y - 6, 12, 12); });
+  }
+
+  // ---- rooms ----
+  function shell(R, c, title, sub, now, o = {}) {
+    const x0 = R.x - R.w / 2, y0 = R.y - R.h / 2;
+    ctx.fillStyle = '#07120e'; chamfer(x0, y0, R.w, R.h, 10); ctx.fill();
+    ctx.save(); chamfer(x0, y0, R.w, R.h, 10); ctx.clip();
+    ctx.strokeStyle = alpha(c, .07); ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = x0; x < x0 + R.w; x += 12) { ctx.moveTo(x, y0); ctx.lineTo(x, y0 + R.h); }
+    for (let y = y0; y < y0 + R.h; y += 12) { ctx.moveTo(x0, y); ctx.lineTo(x0 + R.w, y); }
+    ctx.stroke();
+    const vg = ctx.createRadialGradient(R.x, R.y, 10, R.x, R.y, Math.max(R.w, R.h) * .7); vg.addColorStop(0, alpha(c, .10 + (o.flash || 0) * .25)); vg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = vg; ctx.fillRect(x0, y0, R.w, R.h);
+    ctx.restore();
+    ctx.save(); ctx.shadowColor = c; ctx.shadowBlur = o.dim ? 0 : 10 + (o.flash || 0) * 18;
+    ctx.strokeStyle = c; ctx.lineWidth = 2; chamfer(x0, y0, R.w, R.h, 10); ctx.stroke(); ctx.restore();
+    ctx.strokeStyle = alpha(c, .25); ctx.lineWidth = 1; chamfer(x0 + 5, y0 + 5, R.w - 10, R.h - 10, 7); ctx.stroke();
+    // wall light strips
+    for (let x = x0 + 18; x < x0 + R.w - 18; x += 26) { ctx.fillStyle = alpha(c, .35 + .25 * Math.sin(now / 500 + x)); ctx.fillRect(x, y0 + 2, 10, 1.5); ctx.fillRect(x, y0 + R.h - 3.5, 10, 1.5); }
+    // door
+    if (R !== CORE) { const d = door(R), vert = R.row === 'mid'; ctx.fillStyle = '#06110c'; vert ? ctx.fillRect(d.x - 3, d.y - 11, 6, 22) : ctx.fillRect(d.x - 11, d.y - 3, 22, 6); ctx.fillStyle = alpha(c, .9); vert ? (ctx.fillRect(d.x - 3, d.y - 13, 6, 2), ctx.fillRect(d.x - 3, d.y + 11, 6, 2)) : (ctx.fillRect(d.x - 13, d.y - 3, 2, 6), ctx.fillRect(d.x + 11, d.y - 3, 2, 6)); }
+    // title tab
+    ctx.font = `700 10px ${MONO}`; const tw = ctx.measureText(title).width + 14;
+    ctx.fillStyle = alpha(c, .18); ctx.fillRect(x0 + 10, y0 - 17, tw, 15); ctx.strokeStyle = alpha(c, .7); ctx.lineWidth = 1; ctx.strokeRect(x0 + 10, y0 - 17, tw, 15);
+    txt(c, 10, title, x0 + 17, y0 - 6, 'left', 700);
+    if (sub) txt(alpha(c, .8), 9, sub, x0 + 16 + tw, y0 - 6);
+  }
+  function sessionRoom(R, now) {
+    const s = sessions.get(R.sid) || {}, st = R.status === 'working' && Date.now() - (s.last || 0) > 6e5 ? 'quiet' : R.status;
+    const blink = st === 'waiting' && Math.floor(now / 350) % 2;
+    const c = blink ? '#ffd27a' : STATUS_C[st] || G;
+    ctx.save();
+    if (R.boot < 1) { ctx.beginPath(); ctx.rect(R.x - R.w / 2 - 30, R.y - R.h / 2 - 30, R.w + 60, (R.h + 60) * R.boot); ctx.clip(); }
+    shell(R, c, R.code, '// ' + clip(base(s.cwd) || 'session', 18).toUpperCase() + '  ·  ' + (STATUS_W[st] || ''), now, { flash: R.flash, dim: st === 'ended' });
+    const x0 = R.x - R.w / 2, y0 = R.y - R.h / 2;
+    // consoles along both walls
+    for (let i = 0; i < 6; i++) {
+      const p = consolePos(R, i), key = R.consoles[i], h = key && agents.find(a => a.key === key);
+      const on = h && h.inRoom, hc = on ? h.color : '#24443a';
+      ctx.fillStyle = '#0b1c16'; ctx.fillRect(p.x - 15, p.y - 6, 30, 12); ctx.strokeStyle = alpha(c, .5); ctx.lineWidth = 1; ctx.strokeRect(p.x - 15, p.y - 6, 30, 12);
+      ctx.fillStyle = on ? alpha(hc, .55) : '#123026'; ctx.fillRect(p.x - 12, p.y - 3.5, 24, 7);
+      if (on) { for (let k = 0; k < 3; k++) { ctx.fillStyle = alpha('#ffffff', .6); ctx.fillRect(p.x - 10, p.y - 2.4 + k * 2.2, 4 + ((k * 7 + Math.floor(now / 160)) % 16), .8); } blob(p.x, p.y, hc, 18, .5); }
+      ctx.strokeStyle = 'rgba(120,200,170,.35)'; ctx.beginPath(); ctx.arc(p.sx, p.sy, 6, 0, PI * 2); ctx.stroke();
+    }
+    // holo table with directive
+    const hp = holo(R), spin = now / 900;
+    ctx.fillStyle = '#0b231a'; ctx.beginPath(); ctx.arc(hp.x, hp.y, 18, 0, PI * 2); ctx.fill();
+    ctx.strokeStyle = alpha(c, .9); ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.setLineDash([4, 4]); ctx.lineDashOffset = -now / 40; ctx.beginPath(); ctx.arc(hp.x, hp.y, 23, 0, PI * 2); ctx.strokeStyle = alpha(c, .5); ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0;
+    blob(hp.x, hp.y, c, 34, .35 + .15 * Math.sin(now / 300));
+    ctx.save(); ctx.translate(hp.x, hp.y); ctx.strokeStyle = alpha(c, .95); ctx.lineWidth = 1.2;
+    const cube = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]].map(([x, y, z]) => { const cx = x * Math.cos(spin) - z * Math.sin(spin), cz = x * Math.sin(spin) + z * Math.cos(spin), cy = y * Math.cos(.5) - cz * Math.sin(.5); return [cx * 8, cy * 8]; });
+    ctx.beginPath(); [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]].forEach(([a, b]) => { ctx.moveTo(...cube[a]); ctx.lineTo(...cube[b]); }); ctx.stroke(); ctx.restore();
+    // directive readout
+    const ptxt = R.prompt ? R.prompt.slice(0, Math.floor(R.shown)) : 'NO ACTIVE DIRECTIVE';
+    ctx.font = `8.5px ${MONO}`;
+    const lines = []; let cur = '';
+    for (const w of ptxt.split(/\s+/)) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText('▸ ' + t).width > R.w * .42 && cur) { lines.push(cur); cur = w; } else cur = t; if (lines.length > 1) break; }
+    if (lines.length < 2 && cur) lines.push(cur);
+    lines.slice(0, 2).forEach((l, i) => txt(R.prompt ? alpha('#d7ffe9', .9) : alpha(c, .45), 8.5, (i ? '  ' : '▸ ') + l, x0 + 12, y0 + 18 + i * 10));
+    // crates + vents
+    ctx.strokeStyle = alpha(c, .3); ctx.strokeRect(x0 + 10, y0 + R.h - 22, 12, 12); ctx.beginPath(); ctx.moveTo(x0 + 10, y0 + R.h - 22); ctx.lineTo(x0 + 22, y0 + R.h - 10); ctx.stroke();
+    // alert overlay
+    if (st === 'waiting' && R.alert) {
+      ctx.save(); chamfer(x0, y0, R.w, R.h, 10); ctx.clip();
+      ctx.fillStyle = 'rgba(255,176,32,.06)'; ctx.fillRect(x0, y0, R.w, R.h);
+      ctx.strokeStyle = 'rgba(255,176,32,.35)'; ctx.lineWidth = 4;
+      for (let x = x0 - R.h + ((now / 30) % 16); x < x0 + R.w; x += 16) { ctx.beginPath(); ctx.moveTo(x, y0 + R.h); ctx.lineTo(x + 8, y0 + R.h - 8); ctx.stroke(); }
+      ctx.restore();
+      const bw = Math.min(R.w - 20, 230); ctx.fillStyle = blink ? 'rgba(255,176,32,.95)' : 'rgba(60,40,0,.92)'; ctx.fillRect(R.x - bw / 2, R.y + R.h / 2 + 6, bw, 16);
+      txt(blink ? '#1a1200' : AMBER, 9.5, '⚠ ' + clip(R.alert.msg, 34).toUpperCase(), R.x, R.y + R.h / 2 + 17.5, 'center', 700);
+    }
+    if (st === 'ended') { ctx.fillStyle = 'rgba(0,0,0,.55)'; chamfer(x0, y0, R.w, R.h, 10); ctx.fill(); txt(GREY, 12, 'OFFLINE', R.x, R.y + 4, 'center', 700); }
+    ctx.restore();
+    hits.push({ x0, y0, x1: x0 + R.w, y1: y0 + R.h, room: R, prio: 0 });
+  }
+  function emptySlot(S, now) {
+    const x0 = S.x - S.w / 2, y0 = S.y - S.h / 2;
+    ctx.setLineDash([5, 6]); ctx.strokeStyle = 'rgba(57,255,136,.18)'; ctx.lineWidth = 1; chamfer(x0, y0, S.w, S.h, 10); ctx.stroke(); ctx.setLineDash([]);
+    txt('rgba(57,255,136,.28)', 10, 'EMPTY BERTH', S.x, S.y - 2, 'center', 700);
+    txt('rgba(57,255,136,.2)', 8.5, 'awaiting session', S.x, S.y + 12, 'center');
+    if (Math.floor(now / 900) % 2) txt('rgba(57,255,136,.3)', 10, '_', S.x + 50, S.y - 2);
+  }
+  function serviceRoom(S, now) {
+    const c = S.color, x0 = S.x - S.w / 2, y0 = S.y - S.h / 2;
+    shell(S, c, S.name, 'OPS ' + S.hits, now, { flash: S.flash });
+    const r = rng(S.hits + 3);
+    if (S.id === 'files') {
+      for (let i = 0; i < 6; i++) {
+        const rx = x0 + 16 + i * 29, ry = y0 + 20;
+        ctx.fillStyle = '#0a1a24'; ctx.fillRect(rx, ry, 20, 84); ctx.strokeStyle = alpha(c, .5); ctx.strokeRect(rx, ry, 20, 84);
+        for (let k = 0; k < 12; k++) { const on = Math.sin(now / (180 + i * 37) + k * 1.7 + i) > .2 || S.flash > .3; ctx.fillStyle = on ? alpha(c, .95) : alpha(c, .18); ctx.fillRect(rx + 3, ry + 4 + k * 6.6, 6, 2.5); ctx.fillStyle = on && k % 3 === 0 ? '#7cf29a' : alpha(c, .12); ctx.fillRect(rx + 12, ry + 4 + k * 6.6, 4, 2.5); }
+      }
+      S.items.slice(-3).forEach((it, i) => txt(alpha(c, .5 + i * .2), 8.5, '› ' + clip(it, 28), x0 + 14, y0 + 124 + i * 11));
+    } else if (S.id === 'term') {
+      ctx.fillStyle = '#120c05'; ctx.fillRect(x0 + 14, y0 + 16, S.w - 28, 70); ctx.strokeStyle = alpha(c, .6); ctx.strokeRect(x0 + 14, y0 + 16, S.w - 28, 70);
+      const lines = S.items.slice(-5);
+      if (!lines.length) txt(alpha(c, .5), 8.5, '$ awaiting commands', x0 + 20, y0 + 30);
+      lines.forEach((l, i) => txt(alpha(c, .45 + i * .12), 8.5, '$ ' + clip(l.replace(/^Running\s*/, ''), 30), x0 + 20, y0 + 30 + i * 12));
+      if (Math.floor(now / 450) % 2) { ctx.fillStyle = c; ctx.fillRect(x0 + 20, y0 + 30 + Math.min(4, lines.length) * 12 - 8, 6, 9); }
+      for (let i = 0; i < 14; i++) { ctx.fillStyle = alpha(c, .25); ctx.fillRect(x0 + 24 + i * 12, y0 + 96, 9, 6); }
+    } else if (S.id === 'net') {
+      const cx = x0 + 50, cy = S.y + 6, rad = 36, a = now / 600;
+      ctx.strokeStyle = alpha(c, .35); ctx.lineWidth = 1; [rad, rad * .66, rad * .33].forEach(rr => { ctx.beginPath(); ctx.arc(cx, cy, rr, 0, PI * 2); ctx.stroke(); });
+      ctx.beginPath(); ctx.moveTo(cx - rad, cy); ctx.lineTo(cx + rad, cy); ctx.moveTo(cx, cy - rad); ctx.lineTo(cx, cy + rad); ctx.stroke();
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      for (let k = 0; k < 14; k++) { ctx.fillStyle = alpha(c, .18 * (1 - k / 14)); ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, rad, a - k * .06 - .06, a - k * .06); ctx.closePath(); ctx.fill(); }
+      ctx.restore();
+      for (let k = 0; k < 4; k++) { const ba = r() * PI * 2, bd = r() * rad * .9; ctx.fillStyle = alpha(c, .5 + .5 * S.flash); ctx.beginPath(); ctx.arc(cx + Math.cos(ba) * bd, cy + Math.sin(ba) * bd, 2, 0, PI * 2); ctx.fill(); }
+      S.items.slice(-4).forEach((it, i) => txt(alpha(c, .45 + i * .15), 8.5, clip(it.replace(/^(Fetching|Searching the web for)\s*/, ''), 16), x0 + 98, y0 + 28 + i * 13));
+    } else if (S.id === 'relay') {
+      const pts = []; for (let i = 0; i < 5; i++) for (let j = 0; j < 3; j++) pts.push([x0 + 22 + i * 26, y0 + 28 + j * 26]);
+      pts.forEach(([x, y]) => { ctx.strokeStyle = alpha(c, .6); ctx.beginPath(); ctx.arc(x, y, 5, 0, PI * 2); ctx.stroke(); ctx.fillStyle = alpha(c, .2); ctx.fill(); });
+      for (let k = 0; k < 4; k++) { const a = pts[Math.floor(r() * pts.length)], b = pts[Math.floor(r() * pts.length)]; ctx.strokeStyle = alpha(c, .35 + .5 * S.flash); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.bezierCurveTo(a[0], a[1] + 30, b[0], b[1] + 30, b[0], b[1]); ctx.stroke(); }
+      S.items.slice(-4).forEach((it, i) => txt(alpha(c, .45 + i * .15), 8.5, clip(it.replace(/^Using\s*/, ''), 12), x0 + 150, y0 + 30 + i * 13));
+    } else if (S.id === 'bay') {
+      for (let i = 0; i < 6; i++) {
+        const p = pod(i);
+        ctx.fillStyle = '#071a1d'; ctx.beginPath(); ctx.roundRect(p.x - 11, p.y - 30, 22, 46, 11); ctx.fill();
+        ctx.strokeStyle = alpha(c, .7); ctx.lineWidth = 1.3; ctx.stroke();
+        ctx.fillStyle = alpha(c, .12 + .1 * Math.sin(now / 700 + i)); ctx.beginPath(); ctx.roundRect(p.x - 7, p.y - 26, 14, 38, 7); ctx.fill();
+        ctx.fillStyle = alpha(c, .5); ctx.fillRect(p.x - 5, p.y + 20, 10, 2);
+      }
+      const busy = agents.filter(a => a.role === 'helper' && !a.leaving).length;
+      txt(alpha(c, .8), 8.5, `READY ${Math.max(0, 6 - busy)}/6   DEPLOYED ${busy}`, x0 + 14, y0 + S.h - 12);
+    }
+    hits.push({ x0, y0, x1: x0 + S.w, y1: y0 + S.h, service: S, prio: 0 });
+  }
+  function drawCore(now) {
+    const R = CORE, x0 = R.x - R.w / 2, y0 = R.y - R.h / 2, active = agents.filter(a => a.moving || (a.act && a.R && a.R.status === 'working')).length;
+    shell(R, G, 'CLAUDE CORE', 'LOAD ' + Math.min(99, 18 + active * 11 + Math.round(Math.sin(now / 700) * 4)) + '%', now, { flash: R.flash });
+    const cx = R.x, cy = R.y + 6;
+    blob(cx, cy, G, 90, .45 + .15 * Math.sin(now / 400) + (R.flash || 0) * .4);
+    [[62, 1, [10, 6]], [50, -1.6, [3, 5]], [38, 2.4, [18, 8]]].forEach(([rad, sp, dash]) => {
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(now / 1000 * sp * .6); ctx.setLineDash(dash); ctx.strokeStyle = alpha(G, .6); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, 0, rad, rad * .42, 0, 0, PI * 2); ctx.stroke(); ctx.restore();
+    });
+    ctx.setLineDash([]);
+    // hologram figure
+    const fl = .75 + .25 * Math.sin(now / 70) * (Math.random() < .05 ? 1 : .2), bob = Math.sin(now / 600) * 2;
+    ctx.save(); ctx.translate(cx, cy - 6 + bob); ctx.globalAlpha = fl; ctx.strokeStyle = '#8dffc0'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.shadowColor = G; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.arc(0, -30, 7, 0, PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -22); ctx.lineTo(0, 6); ctx.moveTo(-14, -14); ctx.lineTo(0, -16); ctx.lineTo(14, -14); ctx.moveTo(-14, -14); ctx.lineTo(-18, 2); ctx.moveTo(14, -14); ctx.lineTo(18, 2);
+    ctx.moveTo(0, 6); ctx.lineTo(-8, 28); ctx.moveTo(0, 6); ctx.lineTo(8, 28); ctx.stroke();
+    ctx.globalAlpha = fl * .25; ctx.fillStyle = G; for (let y = -38; y < 30; y += 4) ctx.fillRect(-20, y, 40, 1);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(57,255,136,.12)'; ctx.beginPath(); ctx.moveTo(cx - 26, cy + 34); ctx.lineTo(cx + 26, cy + 34); ctx.lineTo(cx + 8, cy - 40); ctx.lineTo(cx - 8, cy - 40); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = alpha(G, .7); ctx.beginPath(); ctx.ellipse(cx, cy + 34, 26, 7, 0, 0, PI * 2); ctx.stroke();
+    // side readouts
+    txt(alpha(G, .7), 8.5, 'SYNC ' + (rooms.size ? 'NOMINAL' : 'IDLE'), x0 + 12, y0 + 22);
+    txt(alpha(G, .7), 8.5, 'MODULES ' + rooms.size, x0 + 12, y0 + 34);
+    txt(alpha(G, .7), 8.5, 'AGENTS ' + agents.length, R.x + R.w / 2 - 12, y0 + 22, 'right');
+    txt(alpha(G, .7), 8.5, 'PKTS ' + packets.length, R.x + R.w / 2 - 12, y0 + 34, 'right');
+    for (let i = 0; i < 18; i++) { const h = 4 + Math.abs(Math.sin(now / 300 + i * .7)) * 14 * (.4 + active * .15); ctx.fillStyle = alpha(G, .45); ctx.fillRect(x0 + 14 + i * 4, y0 + R.h - 12 - h, 2.5, h); }
+    hits.push({ x0, y0, x1: x0 + R.w, y1: y0 + R.h, core: true, prio: 0 });
+  }
+
+  // ---- agents, packets, labels ----
+  function drawAgent(a, now) {
+    if (a.alpha <= 0) return;
+    const working = a.inRoom && a.act && a.R && a.R.status === 'working';
+    const ring = a.R && a.R.status === 'waiting' && a.role === 'lead' ? AMBER : a.color;
+    ctx.save(); ctx.globalAlpha = a.alpha; ctx.translate(a.x, a.y);
+    blob(0, 0, ring, 16, working || a.moving ? .55 : .3);
+    ctx.strokeStyle = alpha(ring, .8); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 9 + (working ? Math.sin(now / 200) : 0), 0, PI * 2); ctx.stroke();
+    ctx.rotate(a.dir + PI / 2);
+    const sw = a.moving ? Math.sin(a.phase) * 2.2 : 0;
+    ctx.fillStyle = '#1b2a33'; ctx.fillRect(-4, -1 + sw, 3, 5); ctx.fillRect(1, -1 - sw, 3, 5);
+    ctx.fillStyle = a.role === 'lead' ? '#e8f5ee' : a.color; ctx.beginPath(); ctx.ellipse(0, 1, 7, 4.6, 0, 0, PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, 2.5, 6, 2.5, 0, 0, PI); ctx.fill();
+    if (a.role === 'lead') { ctx.fillStyle = G; ctx.fillRect(-1, -2, 2, 5); }
+    ctx.fillStyle = '#2a3440'; ctx.beginPath(); ctx.arc(0, 0, 4.2, 0, PI * 2); ctx.fill();
+    ctx.fillStyle = alpha(ring, .95); ctx.beginPath(); ctx.arc(0, 0, 3.6, PI * 1.15, PI * 1.85); ctx.lineTo(0, -1); ctx.fill();
+    if (working) { const k = Math.sin(now / 60) * 1.2; ctx.fillStyle = '#d7e6ee'; ctx.fillRect(-6, -6 + k, 2, 2); ctx.fillRect(4, -6 - k, 2, 2); }
+    ctx.restore();
+    txt(alpha(ring, .9 * a.alpha), 8, a.label, a.x, a.y - 13, 'center', 700);
+    hits.push({ x0: a.x - 10, y0: a.y - 14, x1: a.x + 10, y1: a.y + 10, agent: a, prio: 1 });
+  }
+  function drawPackets() {
+    for (const p of packets) {
+      const a = p.done ? Math.max(0, p.fade / .25) : 1;
+      ctx.globalCompositeOperation = 'lighter';
+      p.trail.forEach(([x, y], i) => { ctx.fillStyle = alpha(p.color, .08 * i * a); ctx.beginPath(); ctx.arc(x, y, p.size * (i / p.trail.length), 0, PI * 2); ctx.fill(); });
+      ctx.globalCompositeOperation = 'source-over';
+      blob(p.x, p.y, p.color, p.size * 5, .8 * a);
+      ctx.fillStyle = alpha('#ffffff', a); ctx.beginPath(); ctx.arc(p.x, p.y, p.size * .6, 0, PI * 2); ctx.fill();
+    }
+  }
+  function drawFloats() {
+    for (const f of floats) { const a = Math.min(1, f.life / f.max * 1.6); txt(alpha(f.color, a), 8.5, f.text, f.x, f.y, 'center', 700); }
+  }
+  function drawBubbles(now) {
+    for (const a of agents) {
+      if (!a.bubble || a.alpha < .5) continue;
+      ctx.font = `700 9.5px ${MONO}`;
+      const s = clip(a.bubble.text, 44), w = ctx.measureText(s).width + 14, h = 17;
+      const bx = Math.max(MAP.x0 + 4, Math.min(MAP.x1 - w - 4, a.x - w / 2)), by = a.y - 44;
+      ctx.strokeStyle = alpha(a.color, .9); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y - 16); ctx.lineTo(a.x, by + h); ctx.stroke();
+      ctx.fillStyle = 'rgba(4,14,10,.92)'; chamfer(bx, by, w, h, 4); ctx.fill(); ctx.stroke();
+      txt('#e9fff4', 9.5, s, bx + 7, by + 12, 'left', 700);
+    }
+  }
+
+  // ---- HUD ----
+  function topBar(now) {
+    ctx.fillStyle = 'rgba(5,16,11,.95)'; ctx.fillRect(0, 0, W, 50);
+    ctx.strokeStyle = alpha(G, .7); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 50); ctx.lineTo(W, 50); ctx.stroke();
+    txt(G, 15, '◉ CLAUDE OPS', 16, 22, 'left', 800); txt(alpha(G, .6), 9, 'AGENT COMMAND // LIVE', 16, 38);
+    const up = Math.floor((now - t0) / 1000), hh = String(Math.floor(up / 3600)).padStart(2, '0'), mm = String(Math.floor(up / 60) % 60).padStart(2, '0'), ss = String(up % 60).padStart(2, '0');
+    const helpers = agents.filter(a => a.role === 'helper').length, alerts = [...rooms.values()].filter(r => r.status === 'waiting').length;
+    const cells = [['MODULES', rooms.size], ['AGENTS', agents.length], ['HELPERS', helpers], ['TOOL OPS', stats.total], ['FILE', stats.files], ['EXEC', stats.term], ['NET', stats.net], ['RELAY', stats.relay],
+      ['ALERTS', alerts], ['UPTIME', `${hh}:${mm}:${ss}`], ['LOCAL', new Date().toTimeString().slice(0, 8)]];
+    let x = 210;
+    cells.forEach(([k, v]) => {
+      const w = k === 'UPTIME' || k === 'LOCAL' ? 104 : 88, warn = k === 'ALERTS' && v > 0 && Math.floor(now / 350) % 2;
+      ctx.fillStyle = warn ? 'rgba(255,176,32,.25)' : 'rgba(57,255,136,.06)'; ctx.fillRect(x, 8, w - 6, 34);
+      ctx.strokeStyle = alpha(warn ? AMBER : G, .45); ctx.lineWidth = 1; ctx.strokeRect(x, 8, w - 6, 34);
+      txt(alpha(warn ? AMBER : G, .65), 8.5, k, x + 6, 20); txt(warn ? AMBER : '#d7ffe9', 14, String(v), x + 6, 37, 'left', 700);
+      x += w;
+    });
+    // live pulse
+    const on = Math.floor(now / 600) % 2;
+    ctx.fillStyle = on ? '#ff3b4d' : '#5a1219'; ctx.beginPath(); ctx.arc(W - 46, 25, 5, 0, PI * 2); ctx.fill(); txt('#ff6b78', 11, 'LIVE', W - 36, 29, 'left', 700);
+  }
+  function spark(x, y, w, h, data, c) {
+    const max = Math.max(1, ...data); ctx.strokeStyle = c; ctx.lineWidth = 1.2; ctx.beginPath();
+    data.forEach((v, i) => { const px = x + i / (data.length - 1) * w, py = y + h - v / max * h; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke();
+  }
+  function rightPanel(now) {
+    const x0 = 1196, x1 = 1588;
+    panel(x0, 58, x1, 318, 'MODULES');
+    const list = [...rooms.values()].sort((a, b) => a.slotIdx - b.slotIdx);
+    if (!list.length) txt(alpha(G, .5), 10, 'No sessions docked. Start claude.', x0 + 16, 50 + 40);
+    list.slice(0, 5).forEach((R, i) => {
+      const y = 96 + i * 44, s = sessions.get(R.sid) || {}, c = STATUS_C[R.status] || G, blink = R.status === 'waiting' && Math.floor(now / 350) % 2;
+      ctx.fillStyle = 'rgba(57,255,136,.04)'; ctx.fillRect(x0 + 12, y - 4, x1 - x0 - 24, 38);
+      ctx.fillStyle = blink ? '#fff1c2' : c; ctx.beginPath(); ctx.arc(x0 + 22, y + 8, 4, 0, PI * 2); ctx.fill(); blob(x0 + 22, y + 8, c, 12, .6);
+      txt('#d7ffe9', 10.5, R.code, x0 + 32, y + 12, 'left', 700); txt(alpha(c, .95), 10.5, clip(base(s.cwd) || 'session', 16), x0 + 92, y + 12, 'left', 700);
+      txt(c, 9, STATUS_W[R.status] || '', x1 - 20, y + 12, 'right', 700);
+      const n = agents.filter(a => a.R === R).length;
+      txt(alpha(G, .55), 8.5, `AGENTS ${n}  OPS ${R.ops}`, x0 + 32, y + 26);
+      spark(x1 - 130, y + 15, 108, 14, R.hist, alpha(c, .8));
+    });
+    panel(x0, 326, x1, 560, 'AGENT ROSTER');
+    const roster = agents.slice().sort((a, b) => (a.R?.slotIdx ?? 9) - (b.R?.slotIdx ?? 9) || (a.role === 'lead' ? -1 : 1));
+    if (!roster.length) txt(alpha(G, .5), 10, 'Standing by…', x0 + 16, 368);
+    roster.slice(0, 10).forEach((a, i) => {
+      const y = 364 + i * 19;
+      ctx.fillStyle = a.color; ctx.fillRect(x0 + 16, y - 7, 6, 6);
+      txt('#d7ffe9', 9.5, a.label, x0 + 28, y, 'left', 700);
+      txt(alpha(G, .55), 9, a.R ? a.R.code : '', x0 + 66, y);
+      const what = a.moving ? (a.leaving ? '↩ returning to bay' : '→ en route') : (a.act || (a.role === 'lead' ? 'standing by' : 'ready'));
+      txt(alpha('#cfeee2', .8), 9, clip(what, 30), x0 + 122, y);
+    });
+    if (roster.length > 10) txt(alpha(G, .5), 9, `+${roster.length - 10} more`, x0 + 16, 364 + 10 * 19);
+    panel(x0, 568, x1, 804, 'COMMS LOG');
+    const shown = logs.slice(-12);
+    ctx.save(); ctx.beginPath(); ctx.rect(x0 + 10, 596, x1 - x0 - 20, 202); ctx.clip();
+    shown.forEach((l, i) => {
+      const y = 610 + i * 16, age = now - l.born, n = Math.min(l.text.length, Math.floor(age / 18));
+      txt(alpha(G, .4), 8.5, l.ts, x0 + 14, y);
+      txt(l.color, 9, (l.who + (l.mod ? '@' + l.mod.replace('MOD-', 'M') : '')).padEnd(10).slice(0, 10), x0 + 66, y, 'left', 700);
+      txt(alpha('#d7ffe9', .85), 9, clip(l.text.slice(0, n), 30) + (n < l.text.length ? '█' : ''), x0 + 150, y);
+    });
+    ctx.restore();
+  }
+  function bottomBar(now) {
+    ctx.fillStyle = 'rgba(5,16,11,.95)'; ctx.fillRect(0, 812, W, H - 812);
+    ctx.strokeStyle = alpha(G, .7); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 812); ctx.lineTo(W, 812); ctx.stroke();
+    txt(alpha(G, .7), 9, 'THROUGHPUT · events / 4s', 16, 830);
+    const data = stats.hist, max = Math.max(4, ...data), bw = 560 / data.length;
+    data.forEach((v, i) => { const h = v / max * 46; ctx.fillStyle = i === data.length - 1 ? '#d7ffe9' : alpha(G, .35 + .5 * (i / data.length)); ctx.fillRect(16 + i * bw, 886 - h, bw - 2, h); });
+    ctx.strokeStyle = alpha(G, .25); ctx.beginPath(); ctx.moveTo(16, 886.5); ctx.lineTo(576, 886.5); ctx.stroke();
+    let x = 610; txt(alpha(G, .7), 9, 'LEGEND', x, 830);
+    [['FILES', SV.files.color], ['TERMINAL', SV.term.color], ['NET', SV.net.color], ['RELAY', SV.relay.color], ['DIRECTIVE', '#ffffff'], ['ALERT', AMBER]].forEach(([k, c], i) => {
+      const lx = x + (i % 3) * 120, ly = 852 + Math.floor(i / 3) * 22; blob(lx + 5, ly - 4, c, 10, .8); ctx.fillStyle = c; ctx.beginPath(); ctx.arc(lx + 5, ly - 4, 2.5, 0, PI * 2); ctx.fill(); txt(alpha('#d7ffe9', .8), 9.5, k, lx + 16, ly);
+    });
+    const last = logs[logs.length - 1];
+    txt(alpha(G, .7), 9, 'LAST EVENT', 990, 830);
+    txt('#d7ffe9', 10, last ? clip(`${last.who} ${last.text}`, 30) : '—', 990, 852, 'left', 700);
+    txt(alpha(G, .5), 9, `${packets.length} packets in flight`, 990, 872);
+    // minimap
+    const mx = 1196, my = 818, mw = 392, mh = 76, k = Math.min(mw / (MAP.x1 - MAP.x0), mh / (MAP.y1 - MAP.y0)), ox = mx + (mw - (MAP.x1 - MAP.x0) * k) / 2;
+    panel(mx, my, mx + mw, my + mh, '', G);
+    const M = (x, y) => [ox + (x - MAP.x0) * k, my + (y - MAP.y0) * k];
+    [...Object.values(SV), CORE, ...rooms.values()].forEach(R => { const [a, b] = M(R.x - R.w / 2, R.y - R.h / 2); ctx.strokeStyle = alpha(R.color || STATUS_C[R.status] || G, .8); ctx.lineWidth = 1; ctx.strokeRect(a, b, R.w * k, R.h * k); });
+    agents.forEach(a => { const [x, y] = M(a.x, a.y); ctx.fillStyle = a.color; ctx.fillRect(x - 1, y - 1, 2.5, 2.5); });
+    packets.forEach(p => { const [x, y] = M(p.x, p.y); ctx.fillStyle = p.color; ctx.fillRect(x - .5, y - .5, 1.5, 1.5); });
+    const sx = ox + ((now / 20) % ((MAP.x1 - MAP.x0) * k)); ctx.fillStyle = alpha(G, .25); ctx.fillRect(sx, my + 2, 2, mh - 4);
+  }
+
+  // ---- main loop ----
+  let prev = performance.now();
+  function frame(now) {
+    const dt = Math.min(.05, (now - prev) / 1000); prev = now;
+    step(dt, now);
+    if (!canvas.offsetParent) { requestAnimationFrame(frame); return; }
+    const Wc = wrapEl.clientWidth;
+    sc = Math.max(Wc / W, Wc < 760 ? .5 : 0);
+    const cssW = Math.round(W * sc), cssH = Math.round(H * sc), dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr); canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+    }
+    ctx.setTransform(dpr * sc, 0, 0, dpr * sc, 0, 0);
+    hits = [];
+    drawBG(now);
+    drawCorridors(now);
+    const docked = [...rooms.values()];
+    SLOTS.forEach((S, i) => { if (!docked.some(r => r.slotIdx === i)) emptySlot(S, now); });
+    Object.values(SV).forEach(S => serviceRoom(S, now));
+    drawCore(now);
+    docked.forEach(R => sessionRoom(R, now));
+    drawPackets();
+    agents.slice().sort((a, b) => a.y - b.y).forEach(a => drawAgent(a, now));
+    drawFloats(); drawBubbles(now);
+    ctx.strokeStyle = alpha(G, .55); ctx.lineWidth = 1; ctx.strokeRect(MAP.x0, MAP.y0, MAP.x1 - MAP.x0, MAP.y1 - MAP.y0); brackets(MAP.x0, MAP.y0, MAP.x1, MAP.y1, G, 22, 3);
+    txt(alpha(G, .55), 9, 'SECTOR MAP · DECK 01', MAP.x0 + 30, MAP.y1 - 8);
+    topBar(now); rightPanel(now); bottomBar(now);
+    scanlines();
+    const vg = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, H * 1.05); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.55)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---- hover details ----
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect(), x = (e.clientX - rect.left) / sc, y = (e.clientY - rect.top) / sc;
+    const hit = hits.filter(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1).sort((a, b) => b.prio - a.prio)[0];
+    if (!hit) { tip.hidden = true; return; }
+    let html = '';
+    if (hit.agent) {
+      const a = hit.agent, ses = a.R && sessions.get(a.R.sid), ref = a.role === 'lead' ? ses && ses.agents.get('main') : a.agentRef;
+      html = `<b>${esc(a.label)} · ${esc(a.role === 'lead' ? 'lead agent' : (a.type || 'helper') + ' agent')}</b>` + (a.name ? `<span>${esc(a.name)}</span>` : '') +
+        `<span>${esc(a.moving ? (a.leaving ? 'Returning to the agent bay' : 'Walking to its station') : a.act || 'Standing by')}</span>` + (ref ? `<span>${ref.tools} tool use${ref.tools === 1 ? '' : 's'}</span>` : '');
+    } else if (hit.room) {
+      const R = hit.room, s = sessions.get(R.sid) || {};
+      html = `<b>${esc(R.code)} · ${esc(base(s.cwd) || 'session')}</b><span>${esc(s.cwd || '')}</span><span>${esc(STATUS_W[R.status] || '')}${R.alert ? ' — ' + esc(R.alert.msg) : ''}</span>` + (R.prompt ? `<span>“${esc(clip(R.prompt, 120))}”</span>` : '');
+    } else if (hit.service) {
+      const S = hit.service, what = { files: 'File reads, edits and searches', term: 'Shell commands', net: 'Web fetches and searches', relay: 'MCP and other tools', bay: 'Where helper agents wait between tasks' }[S.id];
+      html = `<b>${esc(S.name)}</b><span>${what}</span><span>${S.hits} operation${S.hits === 1 ? '' : 's'} this session</span>` + (S.items.length ? `<span>Last: ${esc(clip(S.items[S.items.length - 1], 60))}</span>` : '');
+    } else html = `<b>Claude core</b><span>Every directive and tool call routes through here.</span>`;
+    tip.innerHTML = html;
+    const wr = wrapEl.getBoundingClientRect();
+    tip.style.left = Math.min(e.clientX - wr.left + wrapEl.scrollLeft + 14, wrapEl.scrollWidth - 260) + 'px';
+    tip.style.top = (e.clientY - wr.top + 14) + 'px'; tip.hidden = false;
+  });
+  canvas.addEventListener('mouseleave', () => { tip.hidden = true; });
+
+  return api;
+})();
+
+// Both scenes get every event; only the visible one is drawn.
+const scene = new Proxy({}, { get: (_, k) => (...args) => { office[k](...args); station[k](...args); } });
+
+let view = 'station';
+try { view = localStorage.getItem('dash-view') || 'station'; } catch {}
 function setView(v) {
   view = v; try { localStorage.setItem('dash-view', v); } catch {}
+  document.getElementById('viewStation').classList.toggle('on', v === 'station');
   document.getElementById('viewOffice').classList.toggle('on', v === 'office');
   document.getElementById('viewList').classList.toggle('on', v === 'list');
   syncView();
 }
 function syncView() {
-  const showOffice = view === 'office';
-  document.getElementById('office').hidden = !showOffice;
-  document.getElementById('sessions').hidden = showOffice;
+  document.getElementById('station').hidden = view !== 'station';
+  document.getElementById('office').hidden = view !== 'office';
+  document.getElementById('sessions').hidden = view !== 'list';
+  document.querySelector('main').classList.toggle('full', view === 'station');
 }
+document.getElementById('viewStation').onclick = () => setView('station');
 document.getElementById('viewOffice').onclick = () => setView('office');
 document.getElementById('viewList').onclick = () => setView('list');
 setView(view);
@@ -1287,7 +1944,7 @@ setView(view);
 document.getElementById('clearBtn').onclick = async () => {
   if (!confirm('Clear all recorded activity?')) return;
   await fetch('/clear', { method: 'POST' }).catch(() => {});
-  sessions.clear(); feed.length = 0; lastId = 0; dirty = true; office.clear();
+  sessions.clear(); feed.length = 0; lastId = 0; dirty = true; scene.clear();
 };
 setInterval(() => render(), 1000);   // also refreshes timers
 poll(); render();

@@ -31,7 +31,23 @@ fail quietly.
 
 ## What you'll see
 
-**Office view** (the default) is a little animated office building:
+**Command view** (the default) is a dark sci-fi control room:
+
+- **Each Claude session is a module** docked around the central **Claude
+  Core**, with a hologram table showing your current request.
+- **Every tool call fires a glowing data packet** down the corridors to a
+  service room and back: **File Vault** (reads, edits, searches), **Terminal**
+  (shows the real commands), **Net Uplink** (web) and **Tool Relay** (MCP and
+  other tools).
+- **Helper agents leave their pods in the Agent Bay**, walk the corridors to
+  their session, work at a console, report back and return to the bay.
+- When Claude needs your permission, the module flashes amber with hazard
+  stripes and an alert.
+- A HUD shows live counters, a module list with activity graphs, an agent
+  roster, a typed-out comms log, a throughput chart and a minimap. Hover any
+  room or agent for details.
+
+**Office view** is a little animated office building:
 
 - **Each Claude session gets its own floor**, with its folder name on the
   wall sign and a status light (green working, yellow needs you, grey idle).
