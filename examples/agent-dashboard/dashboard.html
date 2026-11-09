@@ -2437,6 +2437,8 @@ function frame() {
 frame();
 
 window.galaxyAPI = api;
+window.__cam = (p, t) => { controls.autoRotate = false; focus = null; camera.position.set(...p); targetGoal.set(...t); controls.target.set(...t); };
+window.__focus = sid => { focus = planets.get(sid) || null; controls.autoRotate = false; };
 (window.galaxyQueue || []).splice(0).forEach(([k, args]) => api[k](...args));
 document.getElementById('glLoading').remove();
 </script>
