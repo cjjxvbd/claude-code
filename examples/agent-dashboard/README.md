@@ -31,7 +31,22 @@ fail quietly.
 
 ## What you'll see
 
-**Command view** (the default) is a dark sci-fi control room:
+**Galaxy view** (the default) is a 3D space scene you can spin around:
+
+- **Claude is a burning star** at the centre of a spiral galaxy; **each
+  session is a planet** orbiting it, glowing green (working), amber with a
+  warning ring (needs you) or teal (standing by).
+- **Every tool call is a comet** that streaks to a space station (File
+  Vault, Terminal, Net Uplink, Tool Relay), which flashes and throws sparks.
+- **Helper agents are spaceships** that launch from the hangar, orbit their
+  planet while they work, and fly home with confetti when done.
+- **Your messages** beam down from "YOU" and hit the core with a shockwave.
+- Drag to rotate, scroll to zoom, click a planet to fly the camera to it.
+  Optional sound effects (off by default).
+- Needs an internet connection the first time it loads (it pulls three.js from
+  a CDN). If that fails, the dashboard falls back to the Command view.
+
+**Command view** is a dark sci-fi control room:
 
 - **Each Claude session is a module** docked around the central **Claude
   Core**, with a hologram table showing your current request.
